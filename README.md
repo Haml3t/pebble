@@ -1,16 +1,18 @@
 # Glance — Pebble Time 2 watchface
 
-Shows time, heart rate, weather, Spotify Now Playing, and the next calendar event.
+Shows heart rate (color-coded by cardio zone), weather, Now Playing with album art, and the next upcoming calendar event.
 
 ```
-        ┌──────────────────────┐
-        │        09:42         │
-        │                      │
-        │       72 bpm         │
-        │     58° Cloudy       │
-        │  Holocene — Bon Iver │
-        │  10:00a · 1:1 w/ Sam │
-        └──────────────────────┘
+       ┌──────────────────────────┐
+       │            84            │   ← HR (color = cardio zone)
+       │        73° Rain          │
+       │                          │
+       │     [album art fills     │
+       │      most of screen]     │
+       │                          │
+       │Electric Funeral — Black …│
+       │       10:00a · SQP       │
+       └──────────────────────────┘
 ```
 
 ## Architecture
