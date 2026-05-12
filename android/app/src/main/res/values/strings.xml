@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Glance NP</string>
+    <string name="grant_button">Grant notification access</string>
+    <string name="status_granted">Notification access: GRANTED</string>
+    <string name="status_denied">Notification access: DENIED (tap below to grant)</string>
+    <string name="explainer">Reads MediaSession info from any media app (Spotify, YouTube Music, podcasts, etc.) and forwards Now Playing title, artist, and album art to the Glance Pebble watchface.</string>
+</resources>

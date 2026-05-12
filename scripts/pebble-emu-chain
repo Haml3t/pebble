@@ -1,0 +1,36 @@
+#!/usr/bin/env bash
+# Run multiple pebble commands inside ONE container so they share the same
+# emery QEMU instance. Subsequent subcommands cost ~2-5s instead of paying the
+# ~25-30s QEMU cold-boot tax each time.
+#
+# Usage:
+#   ./scripts/pebble-emu-chain "build && install build/project.pbw && screenshot build/emu-shot.png && kill"
+#
+# The string is run inside the container's shell with `pebble` already on PATH;
+# each command is implicitly `pebble <cmd>` because we set PEBBLE_EMULATOR=emery
+# and rely on the user typing `pebble` themselves. (Free-form bash, basically.)
+set -euo pipefail
+
+PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+IMAGE="${PEBBLE_SDK_IMAGE:-rebble/pebble-sdk:latest}"
+
+if [ $# -lt 1 ]; then
+  echo "usage: $0 \"<bash command string>\"" >&2
+  exit 2
+fi
+
+if [ -t 0 ] && [ -t 1 ]; then
+  TTY_FLAGS=(-it)
+else
+  TTY_FLAGS=(-i)
+fi
+
+exec docker run --rm "${TTY_FLAGS[@]}" \
+  -e SDL_VIDEODRIVER=dummy \
+  -e PEBBLE_EMULATOR=emery \
+  -v "${PROJECT_DIR}:/home/pebble/project" \
+  -w /home/pebble/project \
+  --network host \
+  --entrypoint bash \
+  "${IMAGE}" \
+  -c "$1"

@@ -1,0 +1,26 @@
+#!/usr/bin/env bash
+# Builds the Glance NP Android companion APK via cimg/android Docker image.
+# Output: build/glance-np.apk (debug-signed, sideloadable).
+set -euo pipefail
+
+PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+IMAGE="${ANDROID_BUILD_IMAGE:-cimg/android:2024.10}"
+
+docker run --rm \
+  -v "${PROJECT_DIR}:/proj" \
+  -w /proj/android \
+  --user root \
+  "${IMAGE}" \
+  gradle assembleDebug --no-daemon
+
+docker run --rm \
+  -v "${PROJECT_DIR}:/proj" \
+  --user root \
+  "${IMAGE}" \
+  chown -R "$(id -u):$(id -g)" /proj/android/.gradle /proj/android/app/build /proj/build
+
+mkdir -p "${PROJECT_DIR}/build"
+cp "${PROJECT_DIR}/android/app/build/outputs/apk/debug/app-debug.apk" \
+   "${PROJECT_DIR}/build/glance-np.apk"
+echo "→ build/glance-np.apk"
+ls -lh "${PROJECT_DIR}/build/glance-np.apk"

@@ -1,0 +1,55 @@
+{
+  "name": "pebble-glance",
+  "author": "David Sugarman",
+  "version": "0.1.0",
+  "keywords": [
+    "pebble-app"
+  ],
+  "private": true,
+  "dependencies": {
+    "pebble-clay": "^1.0.4"
+  },
+  "pebble": {
+    "displayName": "Glance",
+    "uuid": "5b5b6a8e-1f5f-4f6e-9a1f-3b9f1a2c4d5e",
+    "sdkVersion": "3",
+    "enableMultiJS": true,
+    "targetPlatforms": [
+      "emery"
+    ],
+    "watchapp": {
+      "watchface": true
+    },
+    "capabilities": [
+      "health",
+      "location",
+      "configurable"
+    ],
+    "messageKeys": [
+      "WEATHER_TEMP",
+      "WEATHER_COND",
+      "WEATHER_ICON",
+      "CAL_TITLE",
+      "CAL_TIME",
+      "NOW_TITLE",
+      "NOW_ARTIST",
+      "ART_CHUNK",
+      "ART_OFFSET",
+      "ART_TOTAL",
+      "CFG_WEATHER_KEY",
+      "CFG_GOOGLE_REFRESH",
+      "CFG_GOOGLE_CLIENT_ID",
+      "CFG_GOOGLE_CLIENT_SECRET",
+      "REQUEST_REFRESH"
+    ],
+    "resources": {
+      "media": [
+        {
+          "type": "raw",
+          "name": "DEFAULT_ART",
+          "file": "data/default_art.bin"
+        }
+      ]
+    }
+  }
+}

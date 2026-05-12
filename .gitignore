@@ -1,0 +1,35 @@
+# Pebble watchapp build output
+build/
+.lock-waf*
+*.pbw
+
+# Pebble SDK / pebble-tool caches
+.pebble-sdk/
+*.pebble_screenshot_*.png
+pebble_screenshot_*.png
+
+# JS / npm
+node_modules/
+
+# Android (Gradle outputs and caches)
+android/.gradle/
+android/app/build/
+android/local.properties
+.gradle-cache/
+
+# Local secrets — anything you don't want public goes in a file matching these
+secrets.local.*
+*.local.json
+*.local.html
+.env
+.env.*
+
+# Editor / OS junk
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*~
+
+# Claude Code project-local settings
+.claude/

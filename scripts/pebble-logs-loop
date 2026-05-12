@@ -1,0 +1,54 @@
+#!/usr/bin/env bash
+# Retry-wrapper around `pebble logs --phone <target>`. The libpebble2 connection
+# has no auto-reconnect, so the moment the phone screen sleeps or the BT link
+# blips, the stream dies. This loop re-invokes it indefinitely and tees the
+# combined output to a log file other processes can tail.
+#
+# Usage:
+#   ./scripts/pebble-logs-loop                      # defaults to 127.0.0.1
+#   ./scripts/pebble-logs-loop 192.168.1.124        # explicit phone IP
+#   PEBBLE_LOG_FILE=./build/pebble.log ./scripts/pebble-logs-loop
+#
+# To tail from elsewhere:
+#   tail -F /tmp/pebble.log
+#
+# Backoff: starts at 2s, doubles on rapid failures up to 30s, resets to 2s
+# whenever a stream stayed connected for at least 30s.
+
+set -uo pipefail
+
+PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+IMAGE="${PEBBLE_SDK_IMAGE:-rebble/pebble-sdk:latest}"
+TARGET="${1:-127.0.0.1}"
+LOG_FILE="${PEBBLE_LOG_FILE:-/tmp/pebble.log}"
+
+backoff=2
+banner() { echo "[pebble-logs-loop] $*" | tee -a "$LOG_FILE"; }
+
+banner "started $(date -Iseconds) — streaming from --phone $TARGET → $LOG_FILE"
+banner "Ctrl-C to stop"
+
+trap 'banner "stopped $(date -Iseconds)"; exit 0' INT TERM
+
+while true; do
+  banner "--- connecting at $(date -Iseconds) ---"
+  start=$(date +%s)
+  docker run --rm -i \
+    -v "${PROJECT_DIR}:/home/pebble/project" \
+    -w /home/pebble/project \
+    --network host \
+    "${IMAGE}" \
+    pebble logs --phone "$TARGET" 2>&1 | tee -a "$LOG_FILE" || true
+  end=$(date +%s)
+  ran_for=$(( end - start ))
+
+  if [ "$ran_for" -ge 30 ]; then
+    backoff=2
+    banner "--- disconnected after ${ran_for}s (was healthy); reconnect in ${backoff}s ---"
+  else
+    backoff=$(( backoff * 2 ))
+    [ "$backoff" -gt 30 ] && backoff=30
+    banner "--- disconnected after ${ran_for}s (fast fail); reconnect in ${backoff}s ---"
+  fi
+  sleep "$backoff"
+done

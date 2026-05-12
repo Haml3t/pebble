@@ -1,0 +1,42 @@
+#!/usr/bin/env bash
+# Run a `pebble` subcommand against the headless emery emulator.
+#
+# Sets the two env vars pebble-tool needs to operate in this container:
+#   SDL_VIDEODRIVER=dummy   - lets QEMU boot without a display
+#   PEBBLE_EMULATOR=emery   - default target so you can omit --emulator flags
+#
+# Compared to ./scripts/pebble this also drops `-it` when stdin isn't a TTY
+# (so it works from non-interactive contexts), and adds --network host so the
+# emulated PKJS layer can reach OpenWeatherMap / Google Calendar.
+#
+# Examples:
+#   ./scripts/pebble-emu build
+#   ./scripts/pebble-emu install build/project.pbw
+#   ./scripts/pebble-emu screenshot build/emu-shot.png
+#   ./scripts/pebble-emu emu-battery --percent 10 --charging
+#   ./scripts/pebble-emu kill
+#
+# Caveats:
+#   - Each invocation is a fresh container, so QEMU cold-boots (~25-30s).
+#     For tight loops, use ./scripts/pebble-emu-chain "cmd1 && cmd2 && …".
+#   - Emery emulator has no heart-rate sensor backend; HealthMetricHeartRateBPM
+#     always returns 0. HR-dependent rendering needs real hardware.
+set -euo pipefail
+
+PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+IMAGE="${PEBBLE_SDK_IMAGE:-rebble/pebble-sdk:latest}"
+
+if [ -t 0 ] && [ -t 1 ]; then
+  TTY_FLAGS=(-it)
+else
+  TTY_FLAGS=(-i)
+fi
+
+exec docker run --rm "${TTY_FLAGS[@]}" \
+  -e SDL_VIDEODRIVER=dummy \
+  -e PEBBLE_EMULATOR=emery \
+  -v "${PROJECT_DIR}:/home/pebble/project" \
+  -w /home/pebble/project \
+  --network host \
+  "${IMAGE}" \
+  pebble "$@"

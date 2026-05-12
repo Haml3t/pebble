@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+# Wrapper around the Rebble pebble-sdk Docker image so you can run pebble
+# subcommands without installing the SDK locally. Usage:
+#   ./scripts/pebble build
+#   ./scripts/pebble install --phone <ip>
+#   ./scripts/pebble logs --phone <ip>
+#   ./scripts/pebble clean
+#
+# Anything you pass is forwarded to `pebble` inside the container, with the
+# current working directory bind-mounted at /home/pebble/project.
+set -euo pipefail
+
+PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+IMAGE="${PEBBLE_SDK_IMAGE:-rebble/pebble-sdk:latest}"
+
+exec docker run --rm -it \
+  -v "${PROJECT_DIR}:/home/pebble/project" \
+  -w /home/pebble/project \
+  --network host \
+  "${IMAGE}" \
+  pebble "$@"

@@ -1,0 +1,54 @@
+[
+  { "type": "heading", "defaultValue": "Glance Settings" },
+  {
+    "type": "section",
+    "items": [
+      { "type": "heading", "defaultValue": "Weather", "size": 4 },
+      {
+        "type": "input",
+        "messageKey": "CFG_WEATHER_KEY",
+        "label": "OpenWeatherMap API key",
+        "attributes": { "placeholder": "abc123…", "type": "text" }
+      }
+    ]
+  },
+  {
+    "type": "section",
+    "items": [
+      { "type": "heading", "defaultValue": "Google Calendar", "size": 4 },
+      {
+        "type": "text",
+        "defaultValue": "Get these from the Google OAuth Playground (see README). Paste each into its own field."
+      },
+      {
+        "type": "input",
+        "messageKey": "CFG_GOOGLE_REFRESH",
+        "label": "Refresh token",
+        "attributes": { "placeholder": "1//0g…", "type": "text" }
+      },
+      {
+        "type": "input",
+        "messageKey": "CFG_GOOGLE_CLIENT_ID",
+        "label": "Client ID",
+        "attributes": { "placeholder": "123-…apps.googleusercontent.com", "type": "text" }
+      },
+      {
+        "type": "input",
+        "messageKey": "CFG_GOOGLE_CLIENT_SECRET",
+        "label": "Client secret",
+        "attributes": { "placeholder": "GOCSPX-…", "type": "text" }
+      }
+    ]
+  },
+  {
+    "type": "section",
+    "items": [
+      { "type": "heading", "defaultValue": "Now Playing", "size": 4 },
+      {
+        "type": "text",
+        "defaultValue": "Now Playing comes from the Glance NP Android companion app — install it separately and grant notification access."
+      }
+    ]
+  },
+  { "type": "submit", "defaultValue": "Save" }
+]
