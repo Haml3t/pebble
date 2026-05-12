@@ -11,6 +11,11 @@ pebble_screenshot_*.png
 # JS / npm
 node_modules/
 
+# Python virtualenvs (per-experiment)
+.venv/
+__pycache__/
+*.pyc
+
 # Android (Gradle outputs and caches)
 android/.gradle/
 android/app/build/

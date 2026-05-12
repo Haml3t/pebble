@@ -10,6 +10,7 @@ var MK = {
   CFG_GOOGLE_REFRESH:      10011,
   CFG_GOOGLE_CLIENT_ID:    10012,
   CFG_GOOGLE_CLIENT_SECRET: 10013,
+  CFG_HR_LIVE:             10015,
 };
 
 var STORAGE = {
@@ -19,6 +20,7 @@ var STORAGE = {
   googleAccessExpiry: 'cfg_google_expiry',
   googleClientId: 'cfg_google_client_id',
   googleClientSecret: 'cfg_google_client_secret',
+  hrLive: 'cfg_hr_live',
 };
 
 function log() {
@@ -209,8 +211,16 @@ function refreshAll() {
   fetchNextCalendarEvent();
 }
 
+function sendHrLive() {
+  // Toggle defaults to live (1Hz) — matches config.json defaultValue.
+  var stored = localStorage.getItem(STORAGE.hrLive);
+  var live = (stored === null) ? true : (stored === '1');
+  sendToWatch({ CFG_HR_LIVE: live ? 1 : 0 });
+}
+
 Pebble.addEventListener('ready', function () {
   log('PKJS ready');
+  sendHrLive();
   refreshAll();
 });
 
@@ -233,15 +243,23 @@ Pebble.addEventListener('webviewclosed', function (e) {
     if (v && typeof v === 'object' && 'value' in v) v = v.value;
     return (typeof v === 'string') ? v.trim() : '';
   }
+  function pullBool(id) {
+    var v = dict[id];
+    if (v && typeof v === 'object' && 'value' in v) v = v.value;
+    return !!v;
+  }
   var weatherKey  = pull(MK.CFG_WEATHER_KEY);
   var googRefresh = pull(MK.CFG_GOOGLE_REFRESH);
   var googClientId = pull(MK.CFG_GOOGLE_CLIENT_ID);
   var googSecret  = pull(MK.CFG_GOOGLE_CLIENT_SECRET);
+  var hrLive      = pullBool(MK.CFG_HR_LIVE);
 
   if (weatherKey)  localStorage.setItem(STORAGE.weatherKey, weatherKey);
   if (googRefresh) localStorage.setItem(STORAGE.googleRefreshToken, googRefresh);
   if (googClientId) localStorage.setItem(STORAGE.googleClientId, googClientId);
   if (googSecret)  localStorage.setItem(STORAGE.googleClientSecret, googSecret);
+  localStorage.setItem(STORAGE.hrLive, hrLive ? '1' : '0');
+  sendToWatch({ CFG_HR_LIVE: hrLive ? 1 : 0 });
 
   // Invalidate cached access token so the next refresh uses fresh creds.
   localStorage.removeItem(STORAGE.googleAccessToken);

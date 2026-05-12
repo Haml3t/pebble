@@ -40,7 +40,8 @@
       "CFG_GOOGLE_REFRESH",
       "CFG_GOOGLE_CLIENT_ID",
       "CFG_GOOGLE_CLIENT_SECRET",
-      "REQUEST_REFRESH"
+      "REQUEST_REFRESH",
+      "CFG_HR_LIVE"
     ],
     "resources": {
       "media": [

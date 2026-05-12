@@ -50,5 +50,18 @@
       }
     ]
   },
+  {
+    "type": "section",
+    "items": [
+      { "type": "heading", "defaultValue": "Heart Rate", "size": 4 },
+      {
+        "type": "toggle",
+        "messageKey": "CFG_HR_LIVE",
+        "label": "Live (1 Hz, more battery)",
+        "description": "On: matches the Pebble OS HR screen — value moves ~once per second. Off: samples every 30s — much easier on the battery.",
+        "defaultValue": true
+      }
+    ]
+  },
   { "type": "submit", "defaultValue": "Save" }
 ]

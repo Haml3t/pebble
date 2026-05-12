@@ -1,5 +1,13 @@
 #include <pebble.h>
 
+// === EXPERIMENT: HR-compare logging (experiments/hr-compare/) =============
+// Emits "HRCMP <unix_ts> <bpm>" lines to APP_LOG so the experiment scripts
+// can parse the watch's HR stream out of `pebble logs`. Set to 0 to disable;
+// fully removing the experiment is this block plus the matching #if/#endif
+// in update_heart_rate(), plus the experiments/hr-compare directory.
+#define HR_COMPARE_LOG_ENABLED 1
+// ==========================================================================
+
 static Window *s_window;
 static Layer *s_root_layer;
 
@@ -47,6 +55,24 @@ static char s_calendar_buf[80];
 
 static char s_now_title[48];
 static char s_now_artist[48];
+
+// title|artist of the song whose art currently lives in s_art_pixels. Used to
+// suppress the "flash to default, fill back in" wipe when the phone re-sends
+// art for the same song (which happens every minute via request_refresh).
+static char s_art_song_key[sizeof(s_now_title) + sizeof(s_now_artist) + 2];
+
+// Live HR mode: when true, sample at 1Hz (matches the OS HR screen, drains
+// battery faster); when false, fall back to a 30s period. Synced from the
+// phone via CFG_HR_LIVE; also persisted on the watch so the setting survives
+// reboot without waiting for PKJS to reconnect.
+#define PERSIST_KEY_HR_LIVE 1
+static bool s_hr_live = true;
+
+static void apply_hr_sample_period(void) {
+#if defined(PBL_HEALTH)
+  health_service_set_heart_rate_sample_period(s_hr_live ? 1 : 30);
+#endif
+}
 
 static void outlined_text_set_text(Layer *layer, const char *text) {
   OutlinedText *ot = (OutlinedText *)layer_get_data(layer);
@@ -108,10 +134,18 @@ static GColor hr_zone_color(long hr) {
 static void update_heart_rate(void) {
   long hr = 0;
 #if defined(PBL_HEALTH)
-  hr = (long)health_service_peek_current_value(HealthMetricHeartRateBPM);
+  hr = (long)health_service_peek_current_value(HealthMetricHeartRateRawBPM);
 #endif
   if (hr > 0) {
     snprintf(s_hr_buf, sizeof(s_hr_buf), "%ld", hr);
+#if HR_COMPARE_LOG_ENABLED && defined(PBL_HEALTH)
+    // Format: "HRCMP <unix_ts> <raw_bpm> <filtered_bpm>". Filtered is 0
+    // when the firmware doesn't have a valid filtered value yet; the
+    // parser treats 0 as missing for that column.
+    long hr_filt = (long)health_service_peek_current_value(HealthMetricHeartRateBPM);
+    APP_LOG(APP_LOG_LEVEL_INFO, "HRCMP %lu %ld %ld",
+            (unsigned long)time(NULL), hr, hr_filt);
+#endif
   } else {
     snprintf(s_hr_buf, sizeof(s_hr_buf), "--");
   }
@@ -217,16 +251,23 @@ static void handle_art_chunk(DictionaryIterator *iter) {
   uint16_t total  = tot_t->value->uint16;
   if (total != ART_W * ART_H) return;
   if (offset + chunk->length > sizeof(s_art_pixels)) return;
-  // A new transfer (offset 0) repaints the default photo first so the screen
-  // never shows mid-transfer pixels stitched from two different songs' covers.
-  // Each subsequent chunk overwrites a slice of that default; visually this is
-  // a top-down wipe from the photo to the new song's art.
+  // A new transfer (offset 0) for a *different* song repaints the default
+  // photo first so the screen never shows mid-transfer pixels stitched from
+  // two different songs' covers. For the same song (e.g. a periodic resend
+  // triggered by request_refresh), we skip the wipe — the incoming bytes are
+  // identical to what's already there, so overwriting in place is invisible.
   if (offset == 0) {
-    load_default_art();
+    char new_key[sizeof(s_art_song_key)];
+    snprintf(new_key, sizeof(new_key), "%s|%s", s_now_title, s_now_artist);
+    if (strcmp(new_key, s_art_song_key) != 0) {
+      load_default_art();
 #if defined(PBL_COLOR)
-    recompute_text_contrast();
+      recompute_text_contrast();
 #endif
-    layer_mark_dirty(s_art_layer);
+      layer_mark_dirty(s_art_layer);
+      strncpy(s_art_song_key, new_key, sizeof(s_art_song_key) - 1);
+      s_art_song_key[sizeof(s_art_song_key) - 1] = '\0';
+    }
   }
   memcpy(&s_art_pixels[offset], chunk->value->data, chunk->length);
   if (offset + chunk->length >= total) {
@@ -293,6 +334,15 @@ static void inbox_received_handler(DictionaryIterator *iter, void *context) {
     recompute_text_contrast();
 #endif
     layer_mark_dirty(s_art_layer);
+  }
+
+  if ((t = dict_find(iter, MESSAGE_KEY_CFG_HR_LIVE))) {
+    bool new_live = (t->value->int32 != 0);
+    if (new_live != s_hr_live) {
+      s_hr_live = new_live;
+      persist_write_bool(PERSIST_KEY_HR_LIVE, s_hr_live);
+      apply_hr_sample_period();
+    }
   }
 
   if (dict_find(iter, MESSAGE_KEY_ART_CHUNK)) handle_art_chunk(iter);
@@ -396,10 +446,15 @@ static void init(void) {
   update_heart_rate();
 
 #if defined(PBL_HEALTH)
-  // Force a fresh HR sample every 30s. Default is once every several minutes
-  // so the displayed number can be very stale. 30s costs some battery but
-  // matches a glance-style watchface.
-  health_service_set_heart_rate_sample_period(30);
+  // Load the persisted HR-mode setting (defaults to live=1Hz on first run),
+  // then apply it. PKJS will resend CFG_HR_LIVE shortly after; this just
+  // avoids a brief mismatch between boot and that message arriving. Must be
+  // reset to 0 in deinit or the watch stays pinned at the elevated sample
+  // rate after the face is switched away.
+  s_hr_live = persist_exists(PERSIST_KEY_HR_LIVE)
+                  ? persist_read_bool(PERSIST_KEY_HR_LIVE)
+                  : true;
+  apply_hr_sample_period();
   health_service_events_subscribe(health_event_handler, NULL);
 #endif
 
