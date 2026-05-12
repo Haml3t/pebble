@@ -41,7 +41,10 @@ public class MediaListenerService extends NotificationListenerService
         @Override
         public void onPlaybackStateChanged(PlaybackState state) {
             if (state == null) return;
-            if (state.getState() != PlaybackState.STATE_PLAYING && state.getState() != PlaybackState.STATE_PAUSED) {
+            if (state.getState() == PlaybackState.STATE_PLAYING) {
+                // Resume from pause: re-send so the watch wipes back to the cover.
+                if (activeController != null) handleMetadata(activeController.getMetadata());
+            } else {
                 sendCleared();
             }
         }
@@ -93,6 +96,17 @@ public class MediaListenerService extends NotificationListenerService
 
     private void handleMetadata(MediaMetadata metadata) {
         if (metadata == null) { sendCleared(); return; }
+        // Only push current-track data if playback is actively playing. Paused
+        // sessions retain metadata indefinitely; without this guard a stray
+        // onMetadataChanged after pause re-pushes the album art and the
+        // watchface flips off the default photo right after we cleared it.
+        if (activeController != null) {
+            PlaybackState ps = activeController.getPlaybackState();
+            if (ps == null || ps.getState() != PlaybackState.STATE_PLAYING) {
+                sendCleared();
+                return;
+            }
+        }
         String title = metadata.getString(MediaMetadata.METADATA_KEY_TITLE);
         String artist = metadata.getString(MediaMetadata.METADATA_KEY_ARTIST);
         if (artist == null) artist = metadata.getString(MediaMetadata.METADATA_KEY_ALBUM_ARTIST);

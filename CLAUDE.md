@@ -3,16 +3,16 @@
 A personal watchface for the Pebble Time 2 (`emery` platform) that shows: current heart rate (color-coded by Karvonen zone), local weather, Spotify/YouTube/podcast Now Playing with album-art background, and the next upcoming Google Calendar event aggregated across all visible calendars.
 
 ```
-       ┌──────────────────────┐
-       │         84           │   ← HR (color = cardio zone)
-       │      73° Rain        │
-       │                      │
-       │   [album art fills   │
-       │    most of screen]   │
-       │                      │
-       │ Galway Girl — Sheeran│
-       │   10:00a · SQP       │
-       └──────────────────────┘
+       ┌──────────────────────────┐
+       │            84            │   ← HR (color = cardio zone)
+       │        73° Rain          │
+       │                          │
+       │     [album art fills     │
+       │      most of screen]     │
+       │                          │
+       │Electric Funeral — Sabbath│
+       │       10:00a · SQP       │
+       └──────────────────────────┘
 ```
 
 ## Architecture
