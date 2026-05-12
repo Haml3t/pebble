@@ -11,7 +11,7 @@ Shows heart rate (color-coded by cardio zone), weather, Now Playing with album a
        │      most of screen]     │
        │                          │
        │Electric Funeral — Black …│
-       │       10:00a · SQP       │
+       │  10:00a · 1-1 with Sam   │
        └──────────────────────────┘
 ```
 
