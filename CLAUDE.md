@@ -10,7 +10,7 @@ A personal watchface for the Pebble Time 2 (`emery` platform) that shows: curren
        │     [album art fills     │
        │      most of screen]     │
        │                          │
-       │Electric Funeral — Sabbath│
+       │Electric Funeral — Black …│
        │       10:00a · SQP       │
        └──────────────────────────┘
 ```
