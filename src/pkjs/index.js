@@ -11,6 +11,7 @@ var MK = {
   CFG_GOOGLE_CLIENT_ID:    10012,
   CFG_GOOGLE_CLIENT_SECRET: 10013,
   CFG_HR_LIVE:             10015,
+  REQUEST_CONFIG:          10016,
 };
 
 var STORAGE = {
@@ -218,14 +219,47 @@ function sendHrLive() {
   sendToWatch({ CFG_HR_LIVE: live ? 1 : 0 });
 }
 
+// PKJS localStorage is unreliable — the Pebble companion app can wipe it on
+// reinstall, PKJS-bundle changes, or sometimes spontaneously. The watchapp
+// keeps a durable mirror in its per-UUID flash, so on every PKJS startup we
+// ask the watch to send its copy back. Values fill localStorage only where
+// we don't already have one, so an in-progress unsaved edit isn't clobbered
+// by an older watch-side copy.
+function applyRecovered(payload, msgKey, storageKey) {
+  var v = payload[msgKey];
+  if (typeof v !== 'string' || v === '') return false;
+  if (localStorage.getItem(storageKey)) return false;
+  localStorage.setItem(storageKey, v);
+  return true;
+}
+
 Pebble.addEventListener('ready', function () {
   log('PKJS ready');
   sendHrLive();
+  sendToWatch({ REQUEST_CONFIG: 1 });
   refreshAll();
 });
 
 Pebble.addEventListener('appmessage', function (e) {
-  if (e.payload && e.payload.REQUEST_REFRESH) refreshAll();
+  if (!e || !e.payload) return;
+  if (e.payload.REQUEST_REFRESH) refreshAll();
+
+  var filled = false;
+  filled = applyRecovered(e.payload, 'CFG_WEATHER_KEY',
+                          STORAGE.weatherKey)         || filled;
+  filled = applyRecovered(e.payload, 'CFG_GOOGLE_REFRESH',
+                          STORAGE.googleRefreshToken) || filled;
+  filled = applyRecovered(e.payload, 'CFG_GOOGLE_CLIENT_ID',
+                          STORAGE.googleClientId)     || filled;
+  filled = applyRecovered(e.payload, 'CFG_GOOGLE_CLIENT_SECRET',
+                          STORAGE.googleClientSecret) || filled;
+  if (filled) {
+    log('recovered config from watch flash; re-running fetches');
+    // Drop any stale access token so the next call uses the recovered creds.
+    localStorage.removeItem(STORAGE.googleAccessToken);
+    localStorage.removeItem(STORAGE.googleAccessExpiry);
+    refreshAll();
+  }
 });
 
 Pebble.addEventListener('showConfiguration', function () {
@@ -259,7 +293,15 @@ Pebble.addEventListener('webviewclosed', function (e) {
   if (googClientId) localStorage.setItem(STORAGE.googleClientId, googClientId);
   if (googSecret)  localStorage.setItem(STORAGE.googleClientSecret, googSecret);
   localStorage.setItem(STORAGE.hrLive, hrLive ? '1' : '0');
-  sendToWatch({ CFG_HR_LIVE: hrLive ? 1 : 0 });
+
+  // Mirror config to watch flash. Empty strings are sent through so the
+  // watch can clear its persisted copy when the user blanks a field.
+  var mirror = { CFG_HR_LIVE: hrLive ? 1 : 0 };
+  mirror.CFG_WEATHER_KEY          = weatherKey;
+  mirror.CFG_GOOGLE_REFRESH       = googRefresh;
+  mirror.CFG_GOOGLE_CLIENT_ID     = googClientId;
+  mirror.CFG_GOOGLE_CLIENT_SECRET = googSecret;
+  sendToWatch(mirror);
 
   // Invalidate cached access token so the next refresh uses fresh creds.
   localStorage.removeItem(STORAGE.googleAccessToken);

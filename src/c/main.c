@@ -74,6 +74,52 @@ static void apply_hr_sample_period(void) {
 #endif
 }
 
+// PKJS localStorage on the phone is not durable — the Pebble companion app
+// can wipe it on watchapp reinstall, PKJS-bundle change, or sometimes
+// spontaneously. We mirror each user-entered secret into per-UUID watch
+// flash (which IS durable across reinstalls) so PKJS can recover them by
+// asking the watch on startup. The watchapp itself doesn't act on these
+// strings — PKJS still owns the HTTP calls.
+#define PERSIST_KEY_WEATHER_KEY      10
+#define PERSIST_KEY_GOOGLE_REFRESH   11
+#define PERSIST_KEY_GOOGLE_CLIENT_ID 12
+#define PERSIST_KEY_GOOGLE_SECRET    13
+
+static void persist_string_from_msg(DictionaryIterator *iter,
+                                    uint32_t msg_key,
+                                    uint32_t persist_key) {
+  Tuple *t = dict_find(iter, msg_key);
+  if (!t || !t->value->cstring) return;
+  if (t->value->cstring[0] == '\0') {
+    persist_delete(persist_key);
+  } else {
+    persist_write_string(persist_key, t->value->cstring);
+  }
+}
+
+static void send_persisted_config(void) {
+  DictionaryIterator *out;
+  if (app_message_outbox_begin(&out) != APP_MSG_OK) return;
+  char buf[PERSIST_STRING_MAX_LENGTH];
+  if (persist_exists(PERSIST_KEY_WEATHER_KEY)) {
+    persist_read_string(PERSIST_KEY_WEATHER_KEY, buf, sizeof(buf));
+    dict_write_cstring(out, MESSAGE_KEY_CFG_WEATHER_KEY, buf);
+  }
+  if (persist_exists(PERSIST_KEY_GOOGLE_REFRESH)) {
+    persist_read_string(PERSIST_KEY_GOOGLE_REFRESH, buf, sizeof(buf));
+    dict_write_cstring(out, MESSAGE_KEY_CFG_GOOGLE_REFRESH, buf);
+  }
+  if (persist_exists(PERSIST_KEY_GOOGLE_CLIENT_ID)) {
+    persist_read_string(PERSIST_KEY_GOOGLE_CLIENT_ID, buf, sizeof(buf));
+    dict_write_cstring(out, MESSAGE_KEY_CFG_GOOGLE_CLIENT_ID, buf);
+  }
+  if (persist_exists(PERSIST_KEY_GOOGLE_SECRET)) {
+    persist_read_string(PERSIST_KEY_GOOGLE_SECRET, buf, sizeof(buf));
+    dict_write_cstring(out, MESSAGE_KEY_CFG_GOOGLE_CLIENT_SECRET, buf);
+  }
+  app_message_outbox_send();
+}
+
 static void outlined_text_set_text(Layer *layer, const char *text) {
   OutlinedText *ot = (OutlinedText *)layer_get_data(layer);
   ot->text = text;
@@ -345,6 +391,20 @@ static void inbox_received_handler(DictionaryIterator *iter, void *context) {
     }
   }
 
+  // Mirror any config strings PKJS sends into watch flash. PKJS calls this
+  // on Save; the watch is our durable copy in case PKJS localStorage gets
+  // wiped later.
+  persist_string_from_msg(iter, MESSAGE_KEY_CFG_WEATHER_KEY,
+                          PERSIST_KEY_WEATHER_KEY);
+  persist_string_from_msg(iter, MESSAGE_KEY_CFG_GOOGLE_REFRESH,
+                          PERSIST_KEY_GOOGLE_REFRESH);
+  persist_string_from_msg(iter, MESSAGE_KEY_CFG_GOOGLE_CLIENT_ID,
+                          PERSIST_KEY_GOOGLE_CLIENT_ID);
+  persist_string_from_msg(iter, MESSAGE_KEY_CFG_GOOGLE_CLIENT_SECRET,
+                          PERSIST_KEY_GOOGLE_SECRET);
+
+  if (dict_find(iter, MESSAGE_KEY_REQUEST_CONFIG)) send_persisted_config();
+
   if (dict_find(iter, MESSAGE_KEY_ART_CHUNK)) handle_art_chunk(iter);
 }
 
@@ -461,7 +521,9 @@ static void init(void) {
   tick_timer_service_subscribe(MINUTE_UNIT, tick_handler);
 
   app_message_register_inbox_received(inbox_received_handler);
-  app_message_open(1024, 256);
+  // Outbox bumped from 256 → 1024 so send_persisted_config() can fit all
+  // four config strings (refresh token alone can be ~200B) in one message.
+  app_message_open(1024, 1024);
 
   request_refresh();
 }
