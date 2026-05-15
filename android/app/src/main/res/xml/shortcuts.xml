@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<shortcuts xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!-- Long-press the Glance NP launcher icon → "Open audio editor" -->
+    <shortcut
+        android:shortcutId="open_editor"
+        android:enabled="true"
+        android:icon="@android:drawable/ic_media_play"
+        android:shortcutShortLabel="@string/shortcut_editor_short"
+        android:shortcutLongLabel="@string/shortcut_editor_long">
+        <intent
+            android:action="android.intent.action.VIEW"
+            android:targetPackage="com.dsugarman.glance"
+            android:targetClass="com.dsugarman.glance.EditorActivity" />
+        <categories android:name="android.shortcut.conversation" />
+    </shortcut>
+
+</shortcuts>

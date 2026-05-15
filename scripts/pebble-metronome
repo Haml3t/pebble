@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+# Wrapper around the Rebble pebble-sdk Docker image, scoped to the metronome
+# project directory instead of the repo root (which is the Glance watchface).
+# Usage matches ./scripts/pebble:
+#   ./scripts/pebble-metronome build
+#   ./scripts/pebble-metronome install --phone <ip>
+#   ./scripts/pebble-metronome logs --phone <ip>
+set -euo pipefail
+
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+PROJECT_DIR="${REPO_ROOT}/metronome"
+IMAGE="${PEBBLE_SDK_IMAGE:-rebble/pebble-sdk:latest}"
+
+exec docker run --rm -it \
+  -v "${PROJECT_DIR}:/home/pebble/project" \
+  -w /home/pebble/project \
+  --network host \
+  "${IMAGE}" \
+  pebble "$@"

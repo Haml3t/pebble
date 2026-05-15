@@ -42,7 +42,8 @@
       "CFG_GOOGLE_CLIENT_SECRET",
       "REQUEST_REFRESH",
       "CFG_HR_LIVE",
-      "REQUEST_CONFIG"
+      "REQUEST_CONFIG",
+      "METRONOME_MINUTES_TODAY"
     ],
     "resources": {
       "media": [

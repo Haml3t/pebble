@@ -1,9 +1,13 @@
 package com.dsugarman.glance;
 
+import android.Manifest;
 import android.content.ComponentName;
 import android.content.Context;
+import android.content.Intent;
 import android.content.IntentFilter;
+import android.content.pm.PackageManager;
 import android.graphics.Bitmap;
+import android.os.Build;
 import android.media.MediaMetadata;
 import android.media.session.MediaController;
 import android.media.session.MediaSessionManager;
@@ -36,6 +40,11 @@ public class MediaListenerService extends NotificationListenerService
     private MediaSessionManager sessionManager;
     private MediaController activeController;
     private PebbleKit.PebbleDataReceiver dataReceiver;
+    // Second receiver for the standalone metronome watchapp. It runs in the
+    // same process so it inherits this service's elevated background status,
+    // which is what lets MetronomeService start as a foreground service when
+    // the metronome app opens on the watch.
+    private PebbleKit.PebbleDataReceiver metronomeReceiver;
     private final MediaController.Callback controllerCb = new MediaController.Callback() {
         @Override
         public void onMetadataChanged(MediaMetadata metadata) {
@@ -87,12 +96,112 @@ public class MediaListenerService extends NotificationListenerService
                     } else {
                         sendCleared();
                     }
+                    // Refresh the metronome chip on Glance from cached prefs
+                    // (avoids waking MetronomeService just to read the value).
+                    pushMetronomeMinutesToGlance(ctx);
                 }
             }
         };
         registerReceiver(dataReceiver,
                 new IntentFilter("com.getpebble.action.app.RECEIVE"),
                 Context.RECEIVER_EXPORTED);
+
+        metronomeReceiver = new PebbleKit.PebbleDataReceiver(MetronomeService.METRONOME_UUID) {
+            @Override
+            public void receiveData(Context ctx, int transId, PebbleDictionary data) {
+                PebbleKit.sendAckToPebble(ctx, transId);
+                dispatchToMetronomeService(ctx, data);
+            }
+        };
+        registerReceiver(metronomeReceiver,
+                new IntentFilter("com.getpebble.action.app.RECEIVE"),
+                Context.RECEIVER_EXPORTED);
+
+        // Glance also receives this listener's pings — if the Glance app is
+        // showing it wants today's metronome minutes too. The metronome
+        // service owns the source of truth (SharedPreferences); we read it
+        // statically here so we don't have to wake the service for a query.
+        // The Glance REQUEST_REFRESH branch above is the trigger.
+    }
+
+    private static void dispatchToMetronomeService(Context ctx, PebbleDictionary data) {
+        // Wrap the whole body so a malformed dict (e.g. a key with an
+        // unexpected uint vs int storage type — see PebbleDictTypeException)
+        // can't tear down the entire app from inside a BroadcastReceiver.
+        Intent send = null;
+        try {
+            // Each getInteger call throws if the key is present *with the
+            // wrong storage type*, so we only call it for keys the watchapp
+            // writes as int32. OPEN/CLOSE/TICK_*/BPM are all int32. The
+            // bundled TODAY_MINUTES_REQUEST on watch is a uint8 — and is
+            // redundant when OPEN is also present (OPEN already triggers a
+            // totals push), so we just ignore it on this path.
+            Long opened  = data.contains(MetronomeService.KEY_METRONOME_OPENED)
+                           ? data.getInteger(MetronomeService.KEY_METRONOME_OPENED) : null;
+            Long closed  = data.contains(MetronomeService.KEY_METRONOME_CLOSED)
+                           ? data.getInteger(MetronomeService.KEY_METRONOME_CLOSED) : null;
+            Long tickOn  = data.contains(MetronomeService.KEY_TICK_STARTED)
+                           ? data.getInteger(MetronomeService.KEY_TICK_STARTED) : null;
+            Long tickOff = data.contains(MetronomeService.KEY_TICK_STOPPED)
+                           ? data.getInteger(MetronomeService.KEY_TICK_STOPPED) : null;
+            Long bpm     = data.contains(MetronomeService.KEY_BPM_CHANGED)
+                           ? data.getInteger(MetronomeService.KEY_BPM_CHANGED) : null;
+
+            if (opened != null) {
+                send = serviceIntent(ctx, MetronomeService.EVT_OPENED, opened.intValue());
+            } else if (closed != null) {
+                send = serviceIntent(ctx, MetronomeService.EVT_CLOSED, 0);
+            } else if (tickOn != null) {
+                send = serviceIntent(ctx, MetronomeService.EVT_TICK_ON, tickOn.intValue());
+            } else if (tickOff != null) {
+                send = serviceIntent(ctx, MetronomeService.EVT_TICK_OFF, 0);
+            } else if (bpm != null) {
+                send = serviceIntent(ctx, MetronomeService.EVT_BPM, bpm.intValue());
+            }
+        } catch (Throwable t) {
+            Log.e(TAG, "metronome dict decode failed", t);
+            return;
+        }
+        if (send == null) return;
+
+        // Hard gate on RECORD_AUDIO. Without it, MetronomeService can't
+        // promote to a microphone-type foreground service — on Android 14+
+        // the platform kills the process with ForegroundServiceDidNotStartIn
+        // TimeException about 5 sec after startForegroundService(). The user
+        // grants mic from the Glance NP main screen.
+        if (ctx.checkSelfPermission(Manifest.permission.RECORD_AUDIO)
+                != PackageManager.PERMISSION_GRANTED) {
+            Log.w(TAG, "metronome event received but RECORD_AUDIO not granted; ignoring");
+            return;
+        }
+
+        // Trampoline through MetronomeTriggerActivity instead of starting
+        // the service directly. Android 14+ refuses microphone-type FGS
+        // unless the calling app is in TOP / while-in-use state, and a
+        // BroadcastReceiver is BFGS — not TOP. The Activity briefly is.
+        try {
+            Intent activityIntent = new Intent(ctx, MetronomeTriggerActivity.class);
+            activityIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            activityIntent.putExtras(send.getExtras());
+            ctx.startActivity(activityIntent);
+        } catch (Throwable t) {
+            Log.e(TAG, "metronome trampoline activity start failed", t);
+        }
+    }
+
+    private static Intent serviceIntent(Context ctx, String evt, int value) {
+        Intent i = new Intent(ctx, MetronomeService.class);
+        i.putExtra(MetronomeService.EXTRA_EVENT, evt);
+        i.putExtra(MetronomeService.EXTRA_VALUE, value);
+        return i;
+    }
+
+    private static void pushMetronomeMinutesToGlance(Context ctx) {
+        if (!PebbleKit.isWatchConnected(ctx)) return;
+        int mins = MetronomeService.peekTodayMinutes(ctx);
+        PebbleDictionary d = new PebbleDictionary();
+        d.addInt32(MetronomeService.KEY_GLANCE_METRONOME_MINUTES, mins);
+        PebbleKit.sendDataToPebble(ctx, WATCH_UUID, d);
     }
 
     @Override
@@ -103,6 +212,10 @@ public class MediaListenerService extends NotificationListenerService
         if (dataReceiver != null) {
             try { unregisterReceiver(dataReceiver); } catch (Throwable ignored) {}
             dataReceiver = null;
+        }
+        if (metronomeReceiver != null) {
+            try { unregisterReceiver(metronomeReceiver); } catch (Throwable ignored) {}
+            metronomeReceiver = null;
         }
         detachController();
         super.onListenerDisconnected();

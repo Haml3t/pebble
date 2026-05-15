@@ -1,0 +1,161 @@
+* { box-sizing: border-box; }
+html, body {
+  margin: 0; padding: 0; height: 100%;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  background: #181a1f; color: #d6d8de;
+  overscroll-behavior: none;
+}
+header {
+  display: flex; align-items: baseline; gap: 1em;
+  padding: 12px 20px; background: #21242b; border-bottom: 1px solid #2c3038;
+}
+header h1 { margin: 0; font-size: 16px; font-weight: 600; }
+#status { font-size: 12px; color: #fc6; flex: 1;
+          overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#back-to-list {
+  font-size: 13px; background: #2c3038; color: #d6d8de;
+  border: 1px solid #3a3f49; padding: 4px 10px; border-radius: 4px;
+  cursor: pointer;
+}
+#back-to-list[hidden] { display: none; }
+
+#layout {
+  display: grid; grid-template-columns: 280px 1fr;
+  height: calc(100% - 50px);
+}
+
+#sidebar {
+  background: #1d2026; border-right: 1px solid #2c3038;
+  padding: 12px; overflow-y: auto;
+}
+#sidebar h2 { font-size: 12px; text-transform: uppercase;
+              color: #8a8f99; margin: 0 0 8px; }
+#refresh {
+  font-size: 11px; background: #2c3038; color: #d6d8de;
+  border: 1px solid #3a3f49; padding: 4px 10px; border-radius: 4px;
+  cursor: pointer; margin-bottom: 8px;
+}
+#refresh:hover { background: #353a45; }
+
+#files { list-style: none; margin: 0; padding: 0; }
+#files li, ul.clips li {
+  list-style: none;
+  margin-bottom: 2px;
+  border-radius: 4px;
+  font-size: 12px; line-height: 1.4;
+}
+#files > li > .row, ul.clips > li > .row {
+  display: flex; align-items: center; gap: 6px;
+  padding: 7px 8px; cursor: pointer;
+  border: 1px solid transparent; border-radius: 4px;
+}
+#files > li > .row:hover, ul.clips > li > .row:hover { background: #252830; }
+#files > li.active > .row, ul.clips > li.active > .row {
+  background: #2c3a4a; border-color: #3a5c8a;
+}
+.caret { color: #6a6f79; width: 12px; text-align: center;
+         cursor: pointer; user-select: none; flex-shrink: 0; }
+.star { color: #8a8f99; cursor: pointer; flex-shrink: 0; font-size: 14px; }
+.star.on, .row:has(.star:not(:empty)) .star { /* fallback if :has unsupported */ }
+.grow { flex: 1; min-width: 0; }
+.grow .name { display: block; color: #d6d8de; font-family: monospace;
+              overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.grow .meta { display: block; color: #8a8f99; font-size: 11px; margin-top: 2px;
+              overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#files li.no-sidecar .grow .meta::after { content: " · no BPM data"; color: #c66; }
+ul.clips { list-style: none; margin: 0 0 6px 18px; padding: 0;
+           border-left: 1px solid #2c3038; padding-left: 8px; }
+ul.clips li.clip { font-size: 11px; }
+ul.clips li.clip .grow .name { color: #aab1c1; }
+.export-clip {
+  background: transparent; color: #8a8f99; border: 1px solid #3a3f49;
+  padding: 2px 8px; border-radius: 3px; font-size: 11px;
+  cursor: pointer; min-height: 28px;
+}
+.export-clip:hover { background: #2c3038; color: #d6d8de; }
+
+#editor {
+  padding: 20px 20px 0 20px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  min-height: 0; /* needed so the flex child (canvases) can shrink */
+}
+
+#info {
+  display: flex; justify-content: space-between; align-items: baseline;
+  margin-bottom: 12px;
+}
+#filename { font-family: monospace; font-size: 13px; color: #d6d8de;
+            overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#duration { font-size: 12px; color: #8a8f99; }
+
+.track {
+  position: relative; margin-bottom: 4px;
+  background: #14161b; border-radius: 4px;
+}
+.track-label {
+  position: absolute; top: 4px; left: 6px;
+  font-size: 10px; color: #6a6f79; text-transform: uppercase;
+  z-index: 2; pointer-events: none;
+}
+.track canvas {
+  display: block; width: 100%;
+  /* Without this, mobile browsers swallow drag gestures as page pans
+     before pointermove can fire on the canvas. */
+  touch-action: none;
+  user-select: none; -webkit-user-select: none;
+}
+.overlay {
+  position: absolute; inset: 0; pointer-events: none;
+}
+
+#ruler-row { margin-bottom: 12px; }
+#ruler { display: block; width: 100%; touch-action: none; }
+
+#controls {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  padding: 10px 0;
+  /* Pin to the bottom of the editor pane so playback / save / share
+     stay visible regardless of how tall the canvases push the page. */
+  position: sticky;
+  bottom: 0;
+  margin-left: -20px; margin-right: -20px;
+  padding-left: 20px; padding-right: 20px;
+  background: #181a1f;
+  border-top: 1px solid #2c3038;
+  z-index: 5;
+}
+button {
+  background: #2c3038; color: #d6d8de;
+  border: 1px solid #3a3f49; padding: 8px 14px; border-radius: 4px;
+  cursor: pointer; font-size: 13px;
+  /* Bigger touch targets on phones. */
+  min-height: 40px;
+}
+button:not(:disabled):hover { background: #353a45; }
+button:disabled { opacity: 0.4; cursor: not-allowed; }
+button.danger { border-color: #6a3030; color: #f88; }
+button.danger:not(:disabled):hover { background: #3a2020; }
+
+#time { font-family: monospace; color: #8a8f99; font-size: 13px; min-width: 110px; }
+#selection-info { font-family: monospace; color: #fc6; font-size: 12px; }
+
+.hint { font-size: 11px; color: #6a6f79; margin-top: 10px; padding-bottom: 16px; }
+@media (max-width: 700px) {
+  .hint { display: none; }
+}
+
+/* --- Phone-portrait layout: stack list & editor; let JS swap which is
+       visible via body.editor-open. In landscape and on wider screens, the
+       two-column layout from above is used. -------------------------------- */
+@media (max-width: 700px) {
+  #layout { grid-template-columns: 1fr; }
+  /* Default: sidebar visible, editor stacked below (off-screen via height). */
+  body:not(.editor-open) #editor { display: none; }
+  body.editor-open #sidebar { display: none; }
+  body.editor-open #back-to-list { display: inline-block; }
+  /* Without an explicit hidden override, the [hidden] attribute reappears
+     once we swap classes — JS toggles aria-hidden too. */
+  body.editor-open #back-to-list[hidden] { display: inline-block; }
+}

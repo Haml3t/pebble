@@ -1,0 +1,36 @@
+{
+  "name": "pebble-metronome",
+  "author": "David Sugarman",
+  "version": "0.1.0",
+  "keywords": [
+    "pebble-app"
+  ],
+  "private": true,
+  "dependencies": {},
+  "pebble": {
+    "displayName": "Metronome",
+    "uuid": "b7c974f6-3542-4d62-882e-faa24bc64906",
+    "sdkVersion": "3",
+    "enableMultiJS": true,
+    "targetPlatforms": [
+      "emery"
+    ],
+    "watchapp": {
+      "watchface": false
+    },
+    "capabilities": [],
+    "messageKeys": [
+      "METRONOME_OPENED",
+      "METRONOME_CLOSED",
+      "TICK_STARTED",
+      "TICK_STOPPED",
+      "BPM_CHANGED",
+      "TODAY_MINUTES_REQUEST",
+      "TODAY_MINUTES",
+      "WEEK_MINUTES"
+    ],
+    "resources": {
+      "media": []
+    }
+  }
+}

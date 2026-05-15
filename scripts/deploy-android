@@ -1,0 +1,84 @@
+#!/usr/bin/env bash
+# Build + install + grant permissions for Glance NP, end-to-end. Replaces
+# the manual tap dance in the Glance NP main activity.
+#
+# adb has WRITE_SECURE_SETTINGS via its host-side authorization, so we can
+# add the notification-listener entry and runtime mic permission from the
+# laptop without touching the phone.
+#
+# Usage:
+#   ./scripts/deploy-android              # build, install (or replace), grant
+#   ./scripts/deploy-android --no-build   # skip the gradle pass (use last APK)
+set -euo pipefail
+
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+APK="${REPO_ROOT}/build/glance-np.apk"
+PKG="com.dsugarman.glance"
+LISTENER="${PKG}/${PKG}.MediaListenerService"
+
+do_build=1
+for arg in "$@"; do
+  case "$arg" in
+    --no-build) do_build=0 ;;
+    -h|--help)
+      sed -n '2,/^set -euo/p' "$0" | sed 's/^# \{0,1\}//' | head -n -1
+      exit 0 ;;
+  esac
+done
+
+if (( do_build )); then
+  "${REPO_ROOT}/scripts/build-android"
+fi
+
+if [[ ! -f "$APK" ]]; then
+  echo "no APK at $APK — run without --no-build first" >&2
+  exit 1
+fi
+
+if ! adb devices | grep -q -E "^[A-Za-z0-9]+\s+device$"; then
+  echo "no adb device attached" >&2
+  exit 1
+fi
+
+echo "→ installing $APK"
+# Try in-place first; fall back to uninstall+install on signature mismatch
+# (only happens once after the build-android keystore stabilization).
+if ! adb install -r "$APK" 2>&1 | tee /tmp/glance-install.log | tail -3; then
+  :
+fi
+if grep -q "INSTALL_FAILED_UPDATE_INCOMPATIBLE" /tmp/glance-install.log; then
+  echo "→ signature mismatch (likely first install after keystore change); uninstalling"
+  adb uninstall "$PKG" >/dev/null
+  adb install "$APK"
+fi
+
+echo "→ granting RECORD_AUDIO"
+adb shell pm grant "$PKG" android.permission.RECORD_AUDIO
+
+echo "→ granting POST_NOTIFICATIONS"
+adb shell pm grant "$PKG" android.permission.POST_NOTIFICATIONS || true
+
+echo "→ enabling notification listener"
+# `cmd notification allow_listener` is available from Android 11+. On older
+# versions, the alternate path is `settings put secure enabled_notification_
+# listeners` with a colon-appended value, but we don't support those here.
+adb shell cmd notification allow_listener "$LISTENER" >/dev/null
+
+echo "→ granting SYSTEM_ALERT_WINDOW (mic-from-background exemption)"
+# SYSTEM_ALERT_WINDOW is an "app op," not a runtime permission, so `pm grant`
+# doesn't apply. `appops set ... allow` is the adb equivalent of the user
+# toggling "Display over other apps" in Settings → Special app access. The
+# exemption lets MetronomeService promote to a microphone-type foreground
+# service when invoked from a Pebble AppMessage broadcast (otherwise
+# Android 14+ blocks it with a SecurityException about "not in while-in-use
+# state").
+adb shell appops set "$PKG" SYSTEM_ALERT_WINDOW allow
+
+# Quick sanity-check: print final grants so a regression in the OS or
+# package state is visible at deploy time, not at first run.
+echo ""
+echo "=== final state ==="
+adb shell dumpsys package "$PKG" | grep -E "RECORD_AUDIO:|FOREGROUND_SERVICE_MICROPHONE:|POST_NOTIFICATIONS:" | sed 's/^[ \t]*//'
+listener_on="$(adb shell settings get secure enabled_notification_listeners | tr ':' '\n' | grep -i glance || true)"
+echo "notification listener: ${listener_on:-NOT GRANTED}"
+echo "done."

@@ -1,0 +1,822 @@
+// Glance metronome — local audio editor.
+// All decoding/clipping happens in the browser via Web Audio API. The
+// Python sidecar just lists files and serves them statically.
+"use strict";
+
+// ---- DOM handles --------------------------------------------------------
+const $ = (sel) => document.querySelector(sel);
+const filesEl       = $("#files");
+const statusEl      = $("#status");
+const filenameEl    = $("#filename");
+const durationEl    = $("#duration");
+const playBtn       = $("#play");
+const playSelBtn    = $("#play-selection");
+const clearSelBtn   = $("#clear-selection");
+const saveBtn       = $("#save-clip");
+const shareBtn      = $("#share-package");
+const timeEl        = $("#time");
+const selInfoEl     = $("#selection-info");
+const refreshBtn    = $("#refresh");
+const bpmAxisEl     = $("#bpm-axis");
+const backBtn       = $("#back-to-list");
+
+const waveCanvas    = $("#waveform");
+const rulerCanvas   = $("#ruler");
+const waveOverlay   = $("#waveform-overlay");
+const deleteBtn     = $("#delete-recording");
+const exportBtn     = $("#export-file");
+
+// ---- State --------------------------------------------------------------
+let audioCtx = null;             // lazy-init on first user gesture
+let audioBuffer = null;          // currently-loaded AudioBuffer
+let currentFile = null;          // {name, ...} from /api/files
+let sidecar = null;              // parsed JSON or null
+let durationSec = 0;
+let activeSource = null;         // current AudioBufferSourceNode
+let playStartCtxTime = 0;        // audioCtx.currentTime at last play()
+let playStartOffset = 0;         // seconds within audioBuffer at last play()
+let isPlaying = false;
+let selection = null;            // {start, end} in seconds, or null
+let raf = null;                  // requestAnimationFrame handle for playhead
+
+// ---- Utilities ----------------------------------------------------------
+function fmtTime(s) {
+  if (!isFinite(s) || s < 0) s = 0;
+  const m = Math.floor(s / 60);
+  const r = s - m * 60;
+  return `${m}:${r.toFixed(1).padStart(4, "0")}`;
+}
+
+// Recording filenames look like "2026-05-15_01-13-07_125bpm.m4a" or
+// "2026-05-15_01-13-07_120-125bpm.m4a". Pull out a human-friendly
+// "2026-05-15 01:13:07" and (optionally) the BPM range.
+function parseRecordingName(name) {
+  const m = name.match(/^(\d{4}-\d{2}-\d{2})_(\d{2})-(\d{2})-(\d{2})_(.+?)\.m4a$/);
+  if (!m) return { stamp: name, bpm: "" };
+  const stamp = `${m[1]} ${m[2]}:${m[3]}:${m[4]}`;
+  // The last segment is the bpm tag — strip the literal "bpm" suffix for
+  // display but keep the dash-separated range as-is ("120-125").
+  const bpm = m[5].replace(/bpm$/, "");
+  return { stamp, bpm };
+}
+function fmtBytes(n) {
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+  return `${(n / 1024 / 1024).toFixed(1)} MB`;
+}
+
+function ensureAudioCtx() {
+  if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  return audioCtx;
+}
+
+// In Android WebView (and Safari) AudioContext starts in `suspended` state
+// and produces no sound until resume() is called inside a user gesture.
+// Call this from every button handler before scheduling audio.
+async function resumeAudioCtxIfNeeded() {
+  if (!audioCtx) return;
+  if (audioCtx.state === "suspended") {
+    try { await audioCtx.resume(); } catch (e) { setStatus("audio resume failed: " + e.message); }
+  }
+}
+
+function setStatus(msg) { statusEl.textContent = msg; }
+
+// ---- File list ----------------------------------------------------------
+async function refreshFileList() {
+  setStatus("loading file list…");
+  try {
+    const items = await fetch("/api/files").then(r => r.json());
+    renderFileList(items);
+    setStatus(`${items.length} recording${items.length === 1 ? "" : "s"}`);
+  } catch (e) {
+    setStatus("file list failed: " + e.message);
+  }
+}
+
+function renderFileList(items) {
+  filesEl.innerHTML = "";
+  if (items.length === 0) {
+    filesEl.innerHTML = "<li style='color:#6a6f79;padding:8px;cursor:default'>"
+      + "no recordings — open the metronome on the watch, then click ↻ refresh</li>";
+    return;
+  }
+  for (const item of items) {
+    filesEl.appendChild(renderParentLi(item));
+  }
+}
+
+function renderParentLi(item) {
+  const li = document.createElement("li");
+  if (!item.has_sidecar) li.classList.add("no-sidecar");
+  const bpm = item.bpm_lo == null ? ""
+            : item.bpm_lo === item.bpm_hi ? `${item.bpm_lo} bpm`
+                                          : `${item.bpm_lo}–${item.bpm_hi} bpm`;
+  const { stamp } = parseRecordingName(item.name);
+  const hasClips = item.clips && item.clips.length > 0;
+  const star = item.starred ? "★" : "☆";
+  li.innerHTML = `
+    <div class="row">
+      <span class="caret" title="${hasClips ? 'expand clips' : ''}">${hasClips ? "▸" : "·"}</span>
+      <span class="star" title="star">${star}</span>
+      <span class="grow">
+        <span class="name">${stamp}</span>
+        <span class="meta">${bpm}${bpm ? " · " : ""}${fmtBytes(item.size)}${hasClips ? " · " + item.clips.length + " clip" + (item.clips.length === 1 ? "" : "s") : ""}</span>
+      </span>
+    </div>`;
+  const caret = li.querySelector(".caret");
+  const starEl = li.querySelector(".star");
+  starEl.addEventListener("click", (e) => {
+    e.stopPropagation();
+    toggleStar(item.name, !item.starred, starEl);
+  });
+  li.querySelector(".row").addEventListener("click", () => selectParent(li, item));
+  if (hasClips) {
+    const sub = document.createElement("ul");
+    sub.className = "clips";
+    sub.hidden = true;
+    for (const clip of item.clips) sub.appendChild(renderClipLi(clip, item));
+    li.appendChild(sub);
+    caret.addEventListener("click", (e) => {
+      e.stopPropagation();
+      sub.hidden = !sub.hidden;
+      caret.textContent = sub.hidden ? "▸" : "▾";
+    });
+  }
+  return li;
+}
+
+function renderClipLi(clip, parent) {
+  const cli = document.createElement("li");
+  cli.className = "clip";
+  const star = clip.starred ? "★" : "☆";
+  // The clip name carries its own t-range; just show the suffix beyond the parent stem.
+  const parentStem = parent.name.replace(/\.m4a$/, "");
+  const label = clip.name.startsWith(parentStem + "_clip_")
+              ? clip.name.slice((parentStem + "_clip_").length).replace(/\.wav$/, "")
+              : clip.name;
+  cli.innerHTML = `
+    <div class="row">
+      <span class="caret"> </span>
+      <span class="star">${star}</span>
+      <span class="grow">
+        <span class="name">${label}</span>
+        <span class="meta">${fmtBytes(clip.size)}</span>
+      </span>
+      <button class="export-clip" title="download clip">⬇</button>
+    </div>`;
+  cli.querySelector(".star").addEventListener("click", (e) => {
+    e.stopPropagation();
+    toggleStar(clip.name, !clip.starred, cli.querySelector(".star"));
+  });
+  cli.querySelector(".export-clip").addEventListener("click", (e) => {
+    e.stopPropagation();
+    triggerExport(clip.name);
+  });
+  cli.querySelector(".row").addEventListener("click", () => {
+    document.querySelectorAll("#files li.active, #files li.clip.active").forEach(x => x.classList.remove("active"));
+    cli.classList.add("active");
+    document.body.classList.add("editor-open");
+    backBtn.hidden = false;
+    // Load a clip as a recording-like object — no sidecar / bpm range.
+    loadRecording({ name: clip.name, size: clip.size, has_sidecar: false,
+                    bpm_lo: null, bpm_hi: null, isClip: true });
+  });
+  return cli;
+}
+
+function selectParent(li, item) {
+  document.querySelectorAll("#files li.active, #files li.clip.active").forEach(x => x.classList.remove("active"));
+  li.classList.add("active");
+  document.body.classList.add("editor-open");
+  backBtn.hidden = false;
+  loadRecording(item);
+}
+
+async function toggleStar(name, value, el) {
+  try {
+    const res = await fetch("/api/star?name=" + encodeURIComponent(name) + "&value=" + value,
+                            { method: "POST" });
+    if (!res.ok) throw new Error("server " + res.status);
+    el.textContent = value ? "★" : "☆";
+    el.classList.toggle("on", value);
+    // Mutate the in-memory item so a click of the now-correct star toggles back.
+    // Easier: refresh the list to re-sync from server.
+    refreshFileList();
+  } catch (e) {
+    setStatus("star failed: " + e.message);
+  }
+}
+
+function triggerExport(name) {
+  // In Android WebView the EditorActivity injects window.GlanceBridge —
+  // use its shareFile() to surface Android's share sheet (Gmail / Drive /
+  // Messages / Save to Files etc). On a regular browser the bridge is
+  // absent and we fall back to a same-origin anchor download.
+  if (typeof GlanceBridge !== "undefined" && GlanceBridge.isAvailable && GlanceBridge.isAvailable()) {
+    const ok = GlanceBridge.shareFile(name);
+    if (ok) {
+      setStatus("share sheet open · " + name);
+    } else {
+      setStatus("share failed — file is at /sdcard/Android/data/com.dsugarman.glance/files/Music/metronome/" + name);
+    }
+    return;
+  }
+  const url = "/recordings/" + encodeURIComponent(name);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = name;
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+  setStatus("download → " + name);
+}
+
+// ---- Load + decode ------------------------------------------------------
+async function loadRecording(item) {
+  currentFile = item;
+  if (item.isClip || item.name.endsWith(".wav")) {
+    filenameEl.textContent = "clip · " + item.name;
+  } else {
+    const { stamp, bpm } = parseRecordingName(item.name);
+    filenameEl.textContent = bpm ? `${stamp}  ·  ${bpm} bpm` : stamp;
+  }
+  durationEl.textContent = "decoding…";
+  setStatus("loading " + item.name);
+  stopPlayback();
+  selection = null;
+  updateSelectionUI();
+
+  ensureAudioCtx();
+  try {
+    const ab = await fetch("/recordings/" + encodeURIComponent(item.name))
+                 .then(r => r.arrayBuffer());
+    audioBuffer = await audioCtx.decodeAudioData(ab);
+    durationSec = audioBuffer.duration;
+  } catch (e) {
+    setStatus("decode failed: " + e.message);
+    durationEl.textContent = "decode failed";
+    return;
+  }
+
+  sidecar = null;
+  if (item.has_sidecar) {
+    try {
+      sidecar = await fetch("/recordings/" + encodeURIComponent(
+                  item.name.replace(/\.m4a$/, ".json")))
+                  .then(r => r.json());
+    } catch (e) {
+      console.warn("sidecar load failed:", e);
+    }
+  }
+
+  durationEl.textContent = fmtTime(durationSec);
+  setStatus(`${audioBuffer.sampleRate.toLocaleString()} Hz · ${audioBuffer.numberOfChannels} ch`);
+  playBtn.disabled = false;
+  // Clips don't have a sidecar to package — disable share for them.
+  shareBtn.disabled = !!(currentFile && (currentFile.isClip || currentFile.name.endsWith(".wav")));
+  deleteBtn.disabled = false;
+  exportBtn.disabled = false;
+
+  resizeCanvases();
+  redrawAll();
+  updateTimeUI();
+}
+
+// ---- Canvases -----------------------------------------------------------
+function resizeCanvases() {
+  for (const c of [waveCanvas, rulerCanvas]) {
+    // Match canvas backing-store size to its CSS size, accounting for DPR.
+    const dpr = window.devicePixelRatio || 1;
+    const cssW = c.clientWidth;
+    const cssH = c.clientHeight;
+    c.width  = Math.max(1, Math.round(cssW * dpr));
+    c.height = Math.max(1, Math.round(cssH * dpr));
+    const ctx = c.getContext("2d");
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  }
+}
+
+function pxToSec(px) {
+  return (px / waveCanvas.clientWidth) * durationSec;
+}
+function secToPx(sec) {
+  return (sec / durationSec) * waveCanvas.clientWidth;
+}
+
+// ---- Waveform + BPM overlay render --------------------------------------
+function drawWaveform() {
+  const ctx = waveCanvas.getContext("2d");
+  const w = waveCanvas.clientWidth;
+  const h = waveCanvas.clientHeight;
+  ctx.clearRect(0, 0, w, h);
+  if (!audioBuffer) return;
+
+  // ---- BPM-derived background bands first (under the audio) -----------
+  if (sidecar && sidecar.events && durationSec > 0) {
+    const durationMs = durationSec * 1000;
+    let tickStart = null;
+    ctx.fillStyle = "rgba(80, 200, 120, 0.10)";
+    for (const e of sidecar.events) {
+      if (e.type === "tick_start") tickStart = e.t_ms;
+      else if (e.type === "tick_stop" && tickStart !== null) {
+        const x0 = (tickStart / durationMs) * w;
+        const x1 = (e.t_ms / durationMs) * w;
+        ctx.fillRect(x0, 0, x1 - x0, h);
+        tickStart = null;
+      }
+    }
+    if (tickStart !== null) {
+      const x0 = (tickStart / durationMs) * w;
+      ctx.fillRect(x0, 0, w - x0, h);
+    }
+  }
+
+  // ---- Audio waveform peaks ------------------------------------------
+  const data = audioBuffer.getChannelData(0);
+  const samplesPerPixel = Math.max(1, Math.floor(data.length / w));
+  ctx.fillStyle = "#3a8a5a";
+  for (let x = 0; x < w; x++) {
+    let min = 0, max = 0;
+    const start = x * samplesPerPixel;
+    const end = Math.min(data.length, start + samplesPerPixel);
+    for (let i = start; i < end; i++) {
+      const v = data[i];
+      if (v < min) min = v;
+      if (v > max) max = v;
+    }
+    const y0 = (1 - max) * h / 2;
+    const y1 = (1 - min) * h / 2;
+    ctx.fillRect(x, y0, 1, Math.max(1, y1 - y0));
+  }
+
+  // Centerline
+  ctx.strokeStyle = "#2c3038";
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(0, h / 2);
+  ctx.lineTo(w, h / 2);
+  ctx.stroke();
+
+  // ---- BPM step line on top of the waveform --------------------------
+  if (!sidecar || !sidecar.events) {
+    bpmAxisEl.textContent = "(no sidecar)";
+    return;
+  }
+  if (durationSec <= 0) return;
+  const durationMs = durationSec * 1000;
+
+  // Y-axis bounds: pad ±5 BPM around the session range, clamped to [30, 240].
+  let bpmMin = sidecar.bpm_min != null ? sidecar.bpm_min : 60;
+  let bpmMax = sidecar.bpm_max != null ? sidecar.bpm_max : 120;
+  if (bpmMin === bpmMax) { bpmMin -= 5; bpmMax += 5; }
+  bpmMin = Math.max(30, bpmMin - 5);
+  bpmMax = Math.min(240, bpmMax + 5);
+  const bpmRange = bpmMax - bpmMin;
+  bpmAxisEl.textContent = `${bpmMin}–${bpmMax} bpm`;
+
+  function bpmToY(bpm) {
+    return h - ((bpm - bpmMin) / bpmRange) * h;
+  }
+
+  // Trace the BPM step-line into a Path2D, then stroke it twice: a fat
+  // black halo first for contrast against the bright-green waveform, then
+  // the amber line over it. Pure-yellow over green is otherwise muddy.
+  const path = new Path2D();
+  let curBpm = null;
+  for (const e of sidecar.events) {
+    if (!e.bpm) continue;
+    const x = (e.t_ms / durationMs) * w;
+    const y = bpmToY(e.bpm);
+    if (curBpm === null) {
+      path.moveTo(0, y);
+      path.lineTo(x, y);
+    } else {
+      const yPrev = bpmToY(curBpm);
+      path.lineTo(x, yPrev);
+      path.lineTo(x, y);
+    }
+    curBpm = e.bpm;
+  }
+  if (curBpm !== null) {
+    path.lineTo(w, bpmToY(curBpm));
+  }
+  ctx.lineJoin = "round";
+  ctx.lineCap  = "round";
+  ctx.strokeStyle = "rgba(0,0,0,0.7)";
+  ctx.lineWidth = 5;
+  ctx.stroke(path);
+  ctx.strokeStyle = "#ffd060";
+  ctx.lineWidth = 2;
+  ctx.stroke(path);
+}
+
+// Kept as a no-op stub so old call sites in redrawAll() still work; the
+// BPM render is now folded into drawWaveform().
+function drawBpm() {}
+
+// ---- Ruler --------------------------------------------------------------
+function drawRuler() {
+  const ctx = rulerCanvas.getContext("2d");
+  const w = rulerCanvas.clientWidth;
+  const h = rulerCanvas.clientHeight;
+  ctx.clearRect(0, 0, w, h);
+  if (durationSec <= 0) return;
+
+  // Pick a tick spacing aiming for ~80px between labels.
+  const targetPx = 80;
+  const targetSec = durationSec * targetPx / w;
+  const niceSteps = [1, 2, 5, 10, 15, 30, 60, 120, 300, 600];
+  let step = niceSteps[niceSteps.length - 1];
+  for (const s of niceSteps) if (s >= targetSec) { step = s; break; }
+
+  ctx.strokeStyle = "#3a3f49";
+  ctx.fillStyle = "#8a8f99";
+  ctx.font = "10px system-ui";
+  ctx.lineWidth = 1;
+  for (let t = 0; t <= durationSec; t += step) {
+    const x = (t / durationSec) * w;
+    ctx.beginPath();
+    ctx.moveTo(x + 0.5, 0);
+    ctx.lineTo(x + 0.5, 6);
+    ctx.stroke();
+    ctx.fillText(fmtTime(t).replace(/\.0$/, ""), x + 3, 14);
+  }
+}
+
+// ---- Overlays (selection + playhead) ------------------------------------
+function drawOverlay(overlayEl, color) {
+  overlayEl.innerHTML = "";
+  if (!audioBuffer) return;
+
+  // Selection rectangle
+  if (selection) {
+    const x0 = secToPx(Math.min(selection.start, selection.end));
+    const x1 = secToPx(Math.max(selection.start, selection.end));
+    const sel = document.createElement("div");
+    sel.style.cssText = `
+      position:absolute; left:${x0}px; top:0; width:${x1 - x0}px; height:100%;
+      background: rgba(252, 204, 102, 0.18);
+      border-left: 1px solid #fc6; border-right: 1px solid #fc6;`;
+    overlayEl.appendChild(sel);
+  }
+
+  // Playhead line
+  const playheadSec = currentPlayheadSec();
+  if (playheadSec != null) {
+    const x = secToPx(playheadSec);
+    const ph = document.createElement("div");
+    ph.style.cssText = `
+      position:absolute; left:${x}px; top:0; width:0; height:100%;
+      border-left: 1px solid ${color};`;
+    overlayEl.appendChild(ph);
+  }
+}
+
+function redrawOverlays() {
+  drawOverlay(waveOverlay, "#fff");
+}
+
+function redrawAll() {
+  drawWaveform();
+  drawBpm();
+  drawRuler();
+  redrawOverlays();
+}
+
+// ---- Playback -----------------------------------------------------------
+function currentPlayheadSec() {
+  if (!audioBuffer) return null;
+  if (!isPlaying) return playStartOffset;
+  return playStartOffset + (audioCtx.currentTime - playStartCtxTime);
+}
+
+function startPlayback(fromSec, untilSec) {
+  if (!audioBuffer) return;
+  stopPlayback();
+  const offset = Math.max(0, Math.min(audioBuffer.duration, fromSec));
+  const remaining = audioBuffer.duration - offset;
+  const playDuration = (untilSec != null)
+      ? Math.max(0, Math.min(remaining, untilSec - offset))
+      : remaining;
+  const src = audioCtx.createBufferSource();
+  src.buffer = audioBuffer;
+  src.connect(audioCtx.destination);
+  src.onended = () => {
+    if (activeSource === src) {
+      isPlaying = false;
+      activeSource = null;
+      playStartOffset = (untilSec != null) ? untilSec : audioBuffer.duration;
+      playBtn.textContent = "▶ play";
+      cancelAnimationFrame(raf);
+      updateTimeUI();
+      redrawOverlays();
+    }
+  };
+  src.start(0, offset, playDuration);
+  activeSource = src;
+  playStartCtxTime = audioCtx.currentTime;
+  playStartOffset = offset;
+  isPlaying = true;
+  playBtn.textContent = "❚❚ pause";
+  tickPlayhead();
+}
+
+function stopPlayback() {
+  if (activeSource) {
+    try { activeSource.onended = null; activeSource.stop(); } catch (e) {}
+    activeSource = null;
+  }
+  if (isPlaying) {
+    playStartOffset = playStartOffset + (audioCtx.currentTime - playStartCtxTime);
+    if (playStartOffset > audioBuffer.duration) playStartOffset = audioBuffer.duration;
+  }
+  isPlaying = false;
+  playBtn.textContent = "▶ play";
+  cancelAnimationFrame(raf);
+  updateTimeUI();
+  redrawOverlays();
+}
+
+async function togglePlay() {
+  if (!audioBuffer) return;
+  await resumeAudioCtxIfNeeded();
+  if (isPlaying) { stopPlayback(); return; }
+  // Smart default: if there's a selection, play the selection. Avoids the
+  // common "I selected a clip but the main play button still played the
+  // whole file from the start" frustration.
+  if (selection) {
+    const a = Math.min(selection.start, selection.end);
+    const b = Math.max(selection.start, selection.end);
+    if (b - a >= 0.1) { startPlayback(a, b); return; }
+  }
+  startPlayback(playStartOffset);
+}
+
+function tickPlayhead() {
+  updateTimeUI();
+  redrawOverlays();
+  if (isPlaying) raf = requestAnimationFrame(tickPlayhead);
+}
+
+function updateTimeUI() {
+  const t = currentPlayheadSec() || 0;
+  timeEl.textContent = `${fmtTime(t)} / ${fmtTime(durationSec)}`;
+}
+
+// ---- Selection ----------------------------------------------------------
+function updateSelectionUI() {
+  if (!selection) {
+    selInfoEl.textContent = "";
+    playSelBtn.disabled = true;
+    clearSelBtn.disabled = true;
+    saveBtn.disabled = true;
+    return;
+  }
+  const a = Math.min(selection.start, selection.end);
+  const b = Math.max(selection.start, selection.end);
+  selInfoEl.textContent = `selection ${fmtTime(a)}–${fmtTime(b)} (${(b - a).toFixed(2)}s)`;
+  playSelBtn.disabled = false;
+  clearSelBtn.disabled = false;
+  saveBtn.disabled = false;
+}
+
+function attachSelectionHandlers(canvas) {
+  // Pointer Events (over mouse events) so touch drag fires `pointermove`
+  // continuously — `mousemove` only fires on mouse-up on touchscreens, so
+  // the previous implementation could never paint a selection range.
+  // touch-action:none on the canvases (in CSS) also stops the browser from
+  // hijacking the gesture for pan/scroll.
+  let dragging = false;
+  let activePointerId = null;
+  canvas.addEventListener("pointerdown", (e) => {
+    if (!audioBuffer) return;
+    activePointerId = e.pointerId;
+    canvas.setPointerCapture(e.pointerId);
+    const rect = canvas.getBoundingClientRect();
+    const anchorSec = pxToSec(e.clientX - rect.left);
+    selection = { start: anchorSec, end: anchorSec };
+    dragging = true;
+    updateSelectionUI();
+    redrawOverlays();
+    e.preventDefault();
+  });
+  canvas.addEventListener("pointermove", (e) => {
+    if (!dragging || e.pointerId !== activePointerId) return;
+    const rect = canvas.getBoundingClientRect();
+    const sec = Math.max(0, Math.min(durationSec, pxToSec(e.clientX - rect.left)));
+    selection.end = sec;
+    updateSelectionUI();
+    redrawOverlays();
+  });
+  const endDrag = (e) => {
+    if (!dragging || (e && e.pointerId !== activePointerId)) return;
+    dragging = false;
+    if (activePointerId !== null) {
+      try { canvas.releasePointerCapture(activePointerId); } catch (_) {}
+    }
+    activePointerId = null;
+    // A trivially-short drag (single tap) collapses into a playhead seek
+    // instead of a zero-width selection — feels more natural.
+    if (selection && Math.abs(selection.end - selection.start) < 0.05) {
+      playStartOffset = selection.start;
+      if (isPlaying) startPlayback(playStartOffset);
+      selection = null;
+      updateSelectionUI();
+      updateTimeUI();
+      redrawOverlays();
+    }
+  };
+  canvas.addEventListener("pointerup", endDrag);
+  canvas.addEventListener("pointercancel", endDrag);
+}
+
+// ---- WAV export ---------------------------------------------------------
+function encodeWAV(buffer, startSec, endSec) {
+  const sr = buffer.sampleRate;
+  const numCh = buffer.numberOfChannels;
+  const startSample = Math.floor(startSec * sr);
+  const endSample   = Math.floor(endSec   * sr);
+  const length = Math.max(0, endSample - startSample);
+
+  const bytesPerSample = 2; // 16-bit PCM
+  const byteLength = 44 + length * numCh * bytesPerSample;
+  const ab = new ArrayBuffer(byteLength);
+  const view = new DataView(ab);
+
+  // RIFF header
+  writeStr(view, 0, "RIFF");
+  view.setUint32(4, byteLength - 8, true);
+  writeStr(view, 8, "WAVE");
+  // fmt chunk
+  writeStr(view, 12, "fmt ");
+  view.setUint32(16, 16, true);          // chunk size
+  view.setUint16(20, 1, true);            // PCM
+  view.setUint16(22, numCh, true);
+  view.setUint32(24, sr, true);
+  view.setUint32(28, sr * numCh * bytesPerSample, true); // byte rate
+  view.setUint16(32, numCh * bytesPerSample, true);      // block align
+  view.setUint16(34, 16, true);                          // bits per sample
+  // data chunk
+  writeStr(view, 36, "data");
+  view.setUint32(40, length * numCh * bytesPerSample, true);
+
+  // Interleave + convert to int16
+  const channelData = [];
+  for (let c = 0; c < numCh; c++) channelData.push(buffer.getChannelData(c));
+  let offset = 44;
+  for (let i = 0; i < length; i++) {
+    for (let c = 0; c < numCh; c++) {
+      let s = channelData[c][startSample + i] || 0;
+      s = Math.max(-1, Math.min(1, s));
+      view.setInt16(offset, s < 0 ? s * 0x8000 : s * 0x7FFF, true);
+      offset += 2;
+    }
+  }
+  return ab;
+}
+
+function writeStr(view, off, str) {
+  for (let i = 0; i < str.length; i++) view.setUint8(off + i, str.charCodeAt(i));
+}
+
+async function saveSelection() {
+  if (!selection || !audioBuffer || !currentFile) return;
+  const a = Math.min(selection.start, selection.end);
+  const b = Math.max(selection.start, selection.end);
+  // Default name uses the parent's stem so the new .wav slots in as a
+  // child of the parent recording in the file list (server-side glob
+  // matches `<parent_stem>*.wav`). The user gets to tweak it via prompt
+  // — preserve the .wav extension if they strip it.
+  let parentStem = currentFile.name.replace(/\.m4a$/, "").replace(/\.wav$/, "");
+  // If the source is itself a clip, derive parent from the bit before
+  // "_clip_" so the new save still slots under the original recording.
+  const clipIdx = parentStem.indexOf("_clip_");
+  if (clipIdx > 0) parentStem = parentStem.slice(0, clipIdx);
+  const defaultName = `${parentStem}_clip_${a.toFixed(1)}-${b.toFixed(1)}s.wav`;
+  const userName = prompt(
+      `Save selection (${a.toFixed(1)}s – ${b.toFixed(1)}s, length ${(b - a).toFixed(1)}s) as:`,
+      defaultName);
+  if (userName == null || userName.trim() === "") {
+    setStatus("save cancelled");
+    return;
+  }
+  let fname = userName.trim();
+  if (!fname.endsWith(".wav")) fname += ".wav";
+  // Slashes / .. stripped server-side, but pre-empt the error here.
+  fname = fname.replace(/[\\/]/g, "_");
+
+  const wavBytes = encodeWAV(audioBuffer, a, b);
+  const blob = new Blob([wavBytes], { type: "audio/wav" });
+  setStatus("saving " + fname + "…");
+  try {
+    const res = await fetch("/api/save-clip?name=" + encodeURIComponent(fname), {
+      method: "POST",
+      headers: { "Content-Type": "audio/wav" },
+      body: blob,
+    });
+    if (!res.ok) throw new Error("server " + res.status);
+    const info = await res.json();
+    setStatus("saved " + info.name + " (" + info.bytes + " bytes)");
+    refreshFileList();
+  } catch (e) {
+    setStatus("save failed: " + e.message);
+  }
+}
+
+// ---- Wire-up ------------------------------------------------------------
+playBtn.addEventListener("click", togglePlay);
+playSelBtn.addEventListener("click", async () => {
+  if (!selection) return;
+  await resumeAudioCtxIfNeeded();
+  const a = Math.min(selection.start, selection.end);
+  const b = Math.max(selection.start, selection.end);
+  startPlayback(a, b);
+});
+clearSelBtn.addEventListener("click", () => {
+  selection = null;
+  updateSelectionUI();
+  redrawOverlays();
+});
+saveBtn.addEventListener("click", saveSelection);
+shareBtn.addEventListener("click", sharePackage);
+deleteBtn.addEventListener("click", deleteRecording);
+exportBtn.addEventListener("click", () => {
+  if (currentFile) triggerExport(currentFile.name);
+});
+refreshBtn.addEventListener("click", refreshFileList);
+backBtn.addEventListener("click", () => {
+  stopPlayback();
+  document.body.classList.remove("editor-open");
+  backBtn.hidden = true;
+  // Wider screens still show the editor — that's fine; clearing the list
+  // selection visually communicates "no longer focused on this recording".
+  document.querySelectorAll("#files li.active").forEach(x => x.classList.remove("active"));
+});
+
+async function deleteRecording() {
+  if (!currentFile) return;
+  const { stamp } = parseRecordingName(currentFile.name);
+  if (!confirm(`Delete ${stamp}? The .m4a and its sidecar are removed permanently.`)) {
+    return;
+  }
+  setStatus("deleting " + currentFile.name + "…");
+  try {
+    const res = await fetch("/api/delete?name=" + encodeURIComponent(currentFile.name),
+                            { method: "POST" });
+    if (!res.ok) throw new Error("server " + res.status);
+    setStatus("deleted " + currentFile.name);
+    stopPlayback();
+    currentFile = null;
+    audioBuffer = null;
+    sidecar = null;
+    durationSec = 0;
+    selection = null;
+    // Disable buttons and reset the editor pane.
+    [playBtn, playSelBtn, clearSelBtn, saveBtn, shareBtn, deleteBtn, exportBtn]
+        .forEach(b => b.disabled = true);
+    filenameEl.textContent = "No recording loaded";
+    durationEl.textContent = "";
+    bpmAxisEl.textContent = "";
+    redrawAll();
+    refreshFileList();
+    // On phone, drop back to the list view.
+    if (window.matchMedia("(max-width: 700px)").matches) {
+      document.body.classList.remove("editor-open");
+      backBtn.hidden = true;
+    }
+  } catch (e) {
+    setStatus("delete failed: " + e.message);
+  }
+}
+
+async function sharePackage() {
+  if (!currentFile) return;
+  setStatus("building package…");
+  try {
+    const res = await fetch("/api/package?name=" + encodeURIComponent(currentFile.name),
+                            { method: "POST" });
+    if (!res.ok) throw new Error("server " + res.status);
+    const info = await res.json();
+    // On phone: hand the zip to Android's share sheet so the user can
+    // pick Gmail / Messages / Drive / etc. without leaving the editor.
+    if (typeof GlanceBridge !== "undefined" && GlanceBridge.isAvailable && GlanceBridge.isAvailable()) {
+      if (GlanceBridge.shareFile(info.name)) {
+        setStatus(`share sheet open · ${info.name} (${(info.bytes/1024).toFixed(1)} KB)`);
+        return;
+      }
+    }
+    // Laptop: surface the on-disk path so the user can attach it themselves.
+    const where = info.path || info.abs_path || info.name;
+    setStatus(`package ready · ${(info.bytes/1024).toFixed(1)} KB · ${where}`);
+  } catch (e) {
+    setStatus("package failed: " + e.message);
+  }
+}
+window.addEventListener("resize", () => {
+  if (audioBuffer) { resizeCanvases(); redrawAll(); }
+});
+attachSelectionHandlers(waveCanvas);
+
+resizeCanvases();
+refreshFileList();

@@ -3,6 +3,10 @@ build/
 .lock-waf*
 *.pbw
 
+# Local recordings pulled from the phone by tools/audio-editor/server.py.
+# Personal data — never commit.
+tools/audio-editor/recordings/
+
 # Pebble SDK / pebble-tool caches
 .pebble-sdk/
 *.pebble_screenshot_*.png
@@ -18,6 +22,7 @@ __pycache__/
 
 # Android (Gradle outputs and caches)
 android/.gradle/
+android/.android-home/
 android/app/build/
 android/local.properties
 .gradle-cache/

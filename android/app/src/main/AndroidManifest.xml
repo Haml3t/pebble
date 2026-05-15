@@ -1,9 +1,24 @@
 <?xml version="1.0" encoding="utf-8"?>
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
 
     <uses-permission android:name="android.permission.MEDIA_CONTENT_CONTROL"
-        tools:ignore="ProtectedPermissions"
-        xmlns:tools="http://schemas.android.com/tools" />
+        tools:ignore="ProtectedPermissions" />
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- Needed by EditorServer's ServerSocket (Android requires INTERNET
+         even for 127.0.0.1 binds). -->
+    <uses-permission android:name="android.permission.INTERNET" />
+    <!--
+      "Display over other apps." We don't actually overlay any UI; this is
+      the documented exemption that lets us start a microphone-type
+      foreground service from a BroadcastReceiver (Android 14+ otherwise
+      blocks it as "not in while-in-use state"). Granted via adb appops in
+      scripts/deploy-android — no user-facing toggle needed.
+    -->
+    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
 
     <queries>
         <package android:name="coredevices.coreapp" />
@@ -13,7 +28,8 @@
     <application
         android:label="Glance NP"
         android:icon="@android:drawable/ic_media_play"
-        android:allowBackup="false">
+        android:allowBackup="false"
+        android:usesCleartextTraffic="true">
 
         <activity
             android:name=".MainActivity"
@@ -22,7 +38,58 @@
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
+            <!-- Long-press the launcher icon → quick action straight into the
+                 editor without going through MainActivity's settings screen. -->
+            <meta-data
+                android:name="android.app.shortcuts"
+                android:resource="@xml/shortcuts" />
         </activity>
+
+        <!--
+          Invisible activity used as a "TOP-state trampoline." See its
+          Javadoc: Android 14+ refuses to start a microphone-type FGS from
+          a BroadcastReceiver because the app isn't in while-in-use state.
+          Briefly being an active Activity is the cheapest way to get that
+          state. exported=true so MainActivity (and adb-driven tests) can
+          launch it via Intent — receivers within our own package don't
+          need it set true, but the test path does.
+        -->
+        <activity
+            android:name=".MetronomeTriggerActivity"
+            android:theme="@android:style/Theme.Translucent.NoTitleBar"
+            android:excludeFromRecents="true"
+            android:noHistory="true"
+            android:taskAffinity=""
+            android:exported="true" />
+
+        <activity
+            android:name=".EditorActivity"
+            android:label="Glance Editor"
+            android:icon="@android:drawable/ic_media_play"
+            android:exported="true"
+            android:screenOrientation="fullSensor"
+            android:configChanges="orientation|screenSize|keyboardHidden|screenLayout">
+            <!-- Second launcher entry so the editor shows up in the app
+                 drawer separately from the settings UI. -->
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <!-- Quick Settings tile. After the APK is installed, open phone
+             Quick Settings → "Edit tiles" → drag "Glance Editor" up. Tap
+             from anywhere (including the lock screen) opens the editor. -->
+        <service
+            android:name=".EditorTileService"
+            android:label="Glance Editor"
+            android:icon="@android:drawable/ic_media_play"
+            android:permission="android.permission.BIND_QUICK_SETTINGS_TILE"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.service.quicksettings.action.QS_TILE" />
+            </intent-filter>
+        </service>
 
         <service
             android:name=".MediaListenerService"
@@ -32,6 +99,23 @@
                 <action android:name="android.service.notification.NotificationListenerService" />
             </intent-filter>
         </service>
+
+        <service
+            android:name=".MetronomeService"
+            android:exported="false"
+            android:foregroundServiceType="microphone" />
+
+        <!-- Read-only ContentProvider that exposes the recordings dir as
+             content:// URIs for Intent.ACTION_SEND. exported=true is
+             required for share-sheet apps to read through it; we limit
+             damage with grantUriPermissions=true (only URIs we explicitly
+             share become accessible) and read-only methods in the
+             provider class. -->
+        <provider
+            android:name=".MetronomeFileProvider"
+            android:authorities="com.dsugarman.glance.files"
+            android:exported="true"
+            android:grantUriPermissions="true" />
 
     </application>
 </manifest>

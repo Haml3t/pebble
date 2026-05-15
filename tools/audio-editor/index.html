@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <!-- Without this, mobile browsers render the page at a 980px desktop
+       width and zoom out, pushing the playback buttons well below the
+       visible viewport on a phone. -->
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Glance Metronome — Audio Editor</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header>
+    <button id="back-to-list" hidden>← back</button>
+    <h1>Glance Metronome — Audio Editor</h1>
+    <span id="status"></span>
+  </header>
+  <div id="layout">
+    <aside id="sidebar">
+      <h2>Recordings</h2>
+      <button id="refresh">↻ refresh</button>
+      <ul id="files"></ul>
+    </aside>
+    <main id="editor">
+      <div id="info">
+        <span id="filename">No recording loaded</span>
+        <span id="duration"></span>
+      </div>
+
+      <div class="track">
+        <div class="track-label">Waveform · BPM <span id="bpm-axis"></span></div>
+        <canvas id="waveform" height="260"></canvas>
+        <div class="overlay" id="waveform-overlay"></div>
+      </div>
+
+      <div id="ruler-row">
+        <canvas id="ruler" height="20"></canvas>
+      </div>
+
+      <div id="controls">
+        <button id="play" disabled>▶</button>
+        <span id="time">0:00 / 0:00</span>
+        <span id="selection-info"></span>
+        <button id="play-selection" disabled title="play selection">▶ sel</button>
+        <button id="clear-selection" disabled title="clear selection">✕</button>
+        <button id="save-clip" disabled title="save selection as WAV">💾 WAV</button>
+        <button id="share-package" disabled title="share as zip">📦 zip</button>
+        <button id="export-file" disabled title="export / download this file">⬇️ export</button>
+        <button id="delete-recording" disabled title="delete this recording (m4a + sidecar)" class="danger">🗑️</button>
+      </div>
+
+      <p class="hint">
+        Click-and-drag on the waveform or BPM track to select a range.
+        Green bands on the BPM track are stretches where the metronome was ticking.
+        Share package bundles the .m4a + .json sidecar into a .zip a friend
+        can drop into their own copy of <code>tools/audio-editor/recordings/</code>.
+      </p>
+    </main>
+  </div>
+  <script src="app.js"></script>
+</body>
+</html>

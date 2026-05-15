@@ -13,6 +13,7 @@ static Layer *s_root_layer;
 
 static Layer *s_hr_layer;
 static Layer *s_weather_layer;
+static Layer *s_metronome_layer;
 static Layer *s_now_playing_layer;
 static Layer *s_calendar_layer;
 static Layer *s_art_layer;
@@ -46,12 +47,16 @@ typedef struct {
 } OutlinedText;
 
 static int s_screen_w, s_screen_h;
-static GRect s_hr_rect, s_weather_rect, s_np_rect, s_cal_rect;
+static GRect s_hr_rect, s_weather_rect, s_metronome_rect, s_np_rect, s_cal_rect;
 
 static char s_hr_buf[16];
 static char s_weather_buf[32];
+static char s_metronome_buf[8];
 static char s_now_playing_buf[96];
 static char s_calendar_buf[80];
+
+// -1 = not yet received from the Android companion (renders as "—").
+static int s_metronome_minutes = -1;
 
 static char s_now_title[48];
 static char s_now_artist[48];
@@ -175,6 +180,36 @@ static GColor hr_zone_color(long hr) {
   if (hr < 152)  return GColorYellow;  // Z2
   if (hr < 176)  return GColorOrange;  // Z3–Z4
   return GColorRed;                    // Z5
+}
+
+// Metronome chip color ramp: white at 0min, transitioning through green at
+// ~30min, blue at ~60min, red at 90min+. Uses Pebble palette colors at
+// roughly even 15-min bands so the shift is visible without per-minute jitter.
+static GColor metronome_color(int minutes) {
+  if (minutes <= 0)  return GColorWhite;
+  if (minutes < 15)  return GColorMintGreen;     // white → green
+  if (minutes < 30)  return GColorGreen;
+  if (minutes < 45)  return GColorIslamicGreen;  // green → blue
+  if (minutes < 60)  return GColorTiffanyBlue;
+  if (minutes < 75)  return GColorBlue;
+  if (minutes < 90)  return GColorPurple;        // blue → red
+  return GColorRed;
+}
+
+static void update_metronome_chip(void) {
+  // LECO_42_NUMBERS has no letter or punctuation glyphs (CLAUDE.md gotcha),
+  // so the chip text is *always* pure digits. Unknown state collapses to "0"
+  // (color stays white via metronome_color), and >=100 caps at "99" — the
+  // chip's role is a quick visual signal anyway, the watchapp itself shows
+  // the precise count.
+  int display = s_metronome_minutes;
+  if (display < 0)  display = 0;
+  if (display > 99) display = 99;
+  snprintf(s_metronome_buf, sizeof(s_metronome_buf), "%d", display);
+  outlined_text_set_text(s_metronome_layer, s_metronome_buf);
+  outlined_text_set_colors(s_metronome_layer,
+                           metronome_color(s_metronome_minutes < 0 ? 0 : s_metronome_minutes),
+                           GColorBlack);
 }
 
 static void update_heart_rate(void) {
@@ -382,6 +417,11 @@ static void inbox_received_handler(DictionaryIterator *iter, void *context) {
     layer_mark_dirty(s_art_layer);
   }
 
+  if ((t = dict_find(iter, MESSAGE_KEY_METRONOME_MINUTES_TODAY))) {
+    s_metronome_minutes = (int)t->value->int32;
+    update_metronome_chip();
+  }
+
   if ((t = dict_find(iter, MESSAGE_KEY_CFG_HR_LIVE))) {
     bool new_live = (t->value->int32 != 0);
     if (new_live != s_hr_live) {
@@ -442,7 +482,12 @@ static void window_load(Window *window) {
   s_screen_h = h;
 
   s_hr_rect      = GRect(0, h * 0.06, w, 52);
-  s_weather_rect = GRect(0, h * 0.32, w, 24);
+  // Weather sits in the left ~65% so the metronome chip can occupy the right
+  // ~35% at a much larger size; the chip vertically straddles the weather
+  // row because it's near-HR-sized (LECO_42).
+  int chip_w = w * 0.32;
+  s_weather_rect   = GRect(0, h * 0.32, w - chip_w, 24);
+  s_metronome_rect = GRect(w - chip_w, h * 0.32 - 14, chip_w, 52);
   s_np_rect      = GRect(4, h - 64, w - 8, 24);
   s_cal_rect     = GRect(4, h - 32, w - 8, 30);
 
@@ -467,6 +512,13 @@ static void window_load(Window *window) {
       fonts_get_system_font(FONT_KEY_GOTHIC_24),
       GTextAlignmentCenter, GColorWhite, GColorBlack, 2);
 
+  // Metronome chip — color shifts with today's minute total. Black halo
+  // (radius 3 to match HR) keeps it legible against the album-art backdrop
+  // regardless of the chosen ramp color.
+  s_metronome_layer = make_outlined_text(s_metronome_rect,
+      fonts_get_system_font(FONT_KEY_LECO_42_NUMBERS),
+      GTextAlignmentCenter, GColorWhite, GColorBlack, 3);
+
   s_now_playing_layer = make_outlined_text(s_np_rect,
       fonts_get_system_font(FONT_KEY_GOTHIC_18),
       GTextAlignmentCenter, GColorWhite, GColorBlack, 2);
@@ -479,6 +531,7 @@ static void window_load(Window *window) {
   outlined_text_set_text(s_weather_layer, "—°");
   outlined_text_set_text(s_now_playing_layer, "Nothing playing");
   outlined_text_set_text(s_calendar_layer, "No upcoming event");
+  update_metronome_chip();
 
 #if defined(PBL_COLOR)
   // Pick text colors that contrast with the default photo so the watchface
@@ -490,6 +543,7 @@ static void window_load(Window *window) {
 static void window_unload(Window *window) {
   layer_destroy(s_hr_layer);
   layer_destroy(s_weather_layer);
+  layer_destroy(s_metronome_layer);
   layer_destroy(s_now_playing_layer);
   layer_destroy(s_calendar_layer);
   layer_destroy(s_art_layer);

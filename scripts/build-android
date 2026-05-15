@@ -6,8 +6,15 @@ set -euo pipefail
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 IMAGE="${ANDROID_BUILD_IMAGE:-cimg/android:2024.10}"
 
+# Persist the debug keystore across builds. Without this, every container
+# generates a fresh ~/.android/debug.keystore, and `adb install -r` rejects
+# the new APK because the signature changed — forcing an uninstall, which
+# wipes notification + mic permission grants every time.
+mkdir -p "${PROJECT_DIR}/android/.android-home"
+
 docker run --rm \
   -v "${PROJECT_DIR}:/proj" \
+  -v "${PROJECT_DIR}/android/.android-home:/root/.android" \
   -w /proj/android \
   --user root \
   "${IMAGE}" \

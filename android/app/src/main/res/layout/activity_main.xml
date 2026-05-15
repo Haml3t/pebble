@@ -22,6 +22,14 @@
         android:layout_height="wrap_content" />
 
     <TextView
+        android:id="@+id/status_mic"
+        android:textSize="16sp"
+        android:textStyle="bold"
+        android:layout_marginBottom="8dp"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content" />
+
+    <TextView
         android:id="@+id/status_watch"
         android:textSize="16sp"
         android:layout_marginBottom="16dp"
@@ -31,6 +39,20 @@
     <Button
         android:id="@+id/grant_button"
         android:text="@string/grant_button"
+        android:layout_marginBottom="8dp"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content" />
+
+    <Button
+        android:id="@+id/mic_button"
+        android:text="@string/mic_button"
+        android:layout_marginBottom="8dp"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content" />
+
+    <Button
+        android:id="@+id/editor_button"
+        android:text="@string/editor_button"
         android:layout_width="match_parent"
         android:layout_height="wrap_content" />
 
