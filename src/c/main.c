@@ -1,4 +1,14 @@
 #include <pebble.h>
+#include "battery_tap.h"
+
+// HR background period used when s_hr_live=false: the watchface samples at
+// this cadence by default, and bursts to 1Hz for HR_BURST_MS on any accel-
+// tap event (wrist flick or screen tap — same signal that wakes the
+// backlight). 60s is the slowest cadence that still gives a fresh-feeling
+// reading when the user glances at the watch (since the burst will refresh
+// it within ~1s anyway).
+#define HR_BACKGROUND_PERIOD_S 60
+#define HR_BURST_MS (30 * 1000)
 
 // === EXPERIMENT: HR-compare logging (experiments/hr-compare/) =============
 // Emits "HRCMP <unix_ts> <bpm>" lines to APP_LOG so the experiment scripts
@@ -66,16 +76,50 @@ static char s_now_artist[48];
 // art for the same song (which happens every minute via request_refresh).
 static char s_art_song_key[sizeof(s_now_title) + sizeof(s_now_artist) + 2];
 
-// Live HR mode: when true, sample at 1Hz (matches the OS HR screen, drains
-// battery faster); when false, fall back to a 30s period. Synced from the
-// phone via CFG_HR_LIVE; also persisted on the watch so the setting survives
-// reboot without waiting for PKJS to reconnect.
+// Live HR mode: when true, hold the sensor at 1Hz the whole time the
+// watchface is active (matches the OS HR screen, drains battery fast).
+// When false, the watchface sits at HR_BACKGROUND_PERIOD_S and bursts to
+// 1Hz for HR_BURST_MS on any accel-tap (wrist flick / screen tap — same
+// signal that wakes the backlight). Synced from the phone via CFG_HR_LIVE;
+// also persisted on the watch so the setting survives reboot without
+// waiting for PKJS to reconnect.
 #define PERSIST_KEY_HR_LIVE 1
-static bool s_hr_live = true;
+static bool s_hr_live = false;
+
+static AppTimer *s_hr_burst_timer = NULL;
 
 static void apply_hr_sample_period(void) {
 #if defined(PBL_HEALTH)
-  health_service_set_heart_rate_sample_period(s_hr_live ? 1 : 30);
+  int period;
+  if (s_hr_live) {
+    period = 1;
+  } else if (s_hr_burst_timer) {
+    period = 1;
+  } else {
+    period = HR_BACKGROUND_PERIOD_S;
+  }
+  health_service_set_heart_rate_sample_period(period);
+  battery_tap_set_hr_period(period);
+#endif
+}
+
+static void hr_burst_revert(void *ctx) {
+  s_hr_burst_timer = NULL;
+  apply_hr_sample_period();
+}
+
+// Promote HR to 1Hz for HR_BURST_MS. If we're already bursting, extend the
+// window. No-op when s_hr_live is true (already at 1Hz forever) — saves a
+// pointless re-apply of the same period.
+static void hr_burst_start(void) {
+#if defined(PBL_HEALTH)
+  if (s_hr_live) return;
+  if (s_hr_burst_timer) {
+    app_timer_reschedule(s_hr_burst_timer, HR_BURST_MS);
+    return;
+  }
+  s_hr_burst_timer = app_timer_register(HR_BURST_MS, hr_burst_revert, NULL);
+  apply_hr_sample_period();
 #endif
 }
 
@@ -360,7 +404,12 @@ static void handle_art_chunk(DictionaryIterator *iter) {
   }
 }
 
+static void outbox_sent_handler(DictionaryIterator *iter, void *context) {
+  battery_tap_record_am_tx();
+}
+
 static void inbox_received_handler(DictionaryIterator *iter, void *context) {
+  battery_tap_record_am_rx();
   Tuple *t;
   bool weather_updated = false;
   int32_t temp = 0;
@@ -467,10 +516,20 @@ static void tick_handler(struct tm *tick_time, TimeUnits units_changed) {
 static void health_event_handler(HealthEventType event, void *context) {
   if (event == HealthEventHeartRateUpdate ||
       event == HealthEventSignificantUpdate) {
+    if (event == HealthEventHeartRateUpdate) battery_tap_record_hr_sample();
     update_heart_rate();
   }
 }
 #endif
+
+// Same accel signal the firmware uses to wake the backlight — fires on a
+// wrist flick or a screen tap. We use it as a "user is probably looking at
+// the watch" trigger to burst HR to 1Hz so the displayed BPM refreshes
+// within ~1s of glancing, without paying for 1Hz the rest of the time.
+static void accel_tap_handler(AccelAxisType axis, int32_t direction) {
+  battery_tap_record_tap();
+  hr_burst_start();
+}
 
 static void window_load(Window *window) {
   window_set_background_color(window, GColorBlack);
@@ -557,24 +616,30 @@ static void init(void) {
                                        });
   window_stack_push(s_window, true);
 
+  battery_tap_init();
+
   update_heart_rate();
 
 #if defined(PBL_HEALTH)
-  // Load the persisted HR-mode setting (defaults to live=1Hz on first run),
-  // then apply it. PKJS will resend CFG_HR_LIVE shortly after; this just
-  // avoids a brief mismatch between boot and that message arriving. Must be
-  // reset to 0 in deinit or the watch stays pinned at the elevated sample
-  // rate after the face is switched away.
+  // Load the persisted HR-mode setting (defaults to burst-on-tap on first
+  // run for battery; user can opt into always-1Hz via the Clay toggle).
+  // PKJS will resend CFG_HR_LIVE shortly after; this just avoids a brief
+  // mismatch between boot and that message arriving. Must be reset to 0 in
+  // deinit or the watch stays pinned at the elevated sample rate after the
+  // face is switched away.
   s_hr_live = persist_exists(PERSIST_KEY_HR_LIVE)
                   ? persist_read_bool(PERSIST_KEY_HR_LIVE)
-                  : true;
+                  : false;
   apply_hr_sample_period();
   health_service_events_subscribe(health_event_handler, NULL);
 #endif
 
+  accel_tap_service_subscribe(accel_tap_handler);
+
   tick_timer_service_subscribe(MINUTE_UNIT, tick_handler);
 
   app_message_register_inbox_received(inbox_received_handler);
+  app_message_register_outbox_sent(outbox_sent_handler);
   // Outbox bumped from 256 → 1024 so send_persisted_config() can fit all
   // four config strings (refresh token alone can be ~200B) in one message.
   app_message_open(1024, 1024);
@@ -583,11 +648,17 @@ static void init(void) {
 }
 
 static void deinit(void) {
+  if (s_hr_burst_timer) {
+    app_timer_cancel(s_hr_burst_timer);
+    s_hr_burst_timer = NULL;
+  }
 #if defined(PBL_HEALTH)
   health_service_events_unsubscribe();
   health_service_set_heart_rate_sample_period(0);  // back to default
 #endif
+  accel_tap_service_unsubscribe();
   tick_timer_service_unsubscribe();
+  battery_tap_deinit();
   window_destroy(s_window);
 }
 

@@ -58,8 +58,8 @@
         "type": "toggle",
         "messageKey": "CFG_HR_LIVE",
         "label": "Live (1 Hz, more battery)",
-        "description": "On: matches the Pebble OS HR screen — value moves ~once per second. Off: samples every 30s — much easier on the battery.",
-        "defaultValue": true
+        "description": "On: matches the Pebble OS HR screen — sensor sits at 1 Hz the whole time the watchface is up. Off (default): samples every 60s and bursts to 1 Hz for 30s on any wrist flick or screen tap — much easier on the battery while still showing a fresh number when you glance.",
+        "defaultValue": false
       }
     ]
   },

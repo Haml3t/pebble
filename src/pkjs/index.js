@@ -213,9 +213,10 @@ function refreshAll() {
 }
 
 function sendHrLive() {
-  // Toggle defaults to live (1Hz) — matches config.json defaultValue.
+  // Toggle defaults to burst-on-tap (1Hz only during ~30s windows after a
+  // wrist flick) — matches config.json defaultValue: false.
   var stored = localStorage.getItem(STORAGE.hrLive);
-  var live = (stored === null) ? true : (stored === '1');
+  var live = (stored === null) ? false : (stored === '1');
   sendToWatch({ CFG_HR_LIVE: live ? 1 : 0 });
 }
 
