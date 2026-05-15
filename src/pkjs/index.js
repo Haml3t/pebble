@@ -122,14 +122,30 @@ function fetchCalendarList(token, cb) {
   var xhr = new XMLHttpRequest();
   xhr.open('GET',
     'https://www.googleapis.com/calendar/v3/users/me/calendarList'
-    + '?minAccessRole=reader&fields=items(id,selected,deleted)');
+    + '?minAccessRole=reader&fields=items(id,summary,selected,hidden,deleted)');
   xhr.setRequestHeader('Authorization', 'Bearer ' + token);
   xhr.onload = function () {
     try {
       var data = JSON.parse(xhr.responseText);
       if (data.error) { reportCalError('list ' + data.error.message); cb([]); return; }
-      var ids = (data.items || [])
-        .filter(function (c) { return c.selected !== false && !c.deleted; })
+      // Strict include: `selected === true` only. The previous
+      // `selected !== false` filter let calendars where Google omits the
+      // field (a documented "default is False" case) leak through —
+      // including ones the user explicitly unchecked, since Google
+      // sometimes returns `undefined` instead of `false` for those. Also
+      // exclude `hidden:true` (calendar removed from the sidebar list
+      // entirely) and `deleted:true`.
+      var items = (data.items || []);
+      items.forEach(function (c) {
+        log('cal', c.summary || '(no summary)',
+            'selected=' + JSON.stringify(c.selected),
+            'hidden=' + JSON.stringify(c.hidden),
+            'deleted=' + JSON.stringify(c.deleted));
+      });
+      var ids = items
+        .filter(function (c) {
+          return c.selected === true && !c.hidden && !c.deleted;
+        })
         .map(function (c) { return c.id; });
       cb(ids);
     } catch (e) { reportCalError('list parse: ' + e.message); cb([]); }
@@ -212,6 +228,22 @@ function refreshAll() {
   fetchNextCalendarEvent();
 }
 
+// Mirror our STORAGE keys into Clay's own settings store so the settings
+// page pre-fills with the current values. Without this Clay shows empty
+// inputs even when we have working credentials, and a user editing one
+// field and hitting Save would write empty strings for the others — which
+// our save handler mirrors as `persist_delete()` to the watch, wiping the
+// flash copy. So this is also a safety fix against accidental data loss.
+function syncToClay() {
+  clay.setSettings({
+    CFG_WEATHER_KEY:          localStorage.getItem(STORAGE.weatherKey)          || '',
+    CFG_GOOGLE_REFRESH:       localStorage.getItem(STORAGE.googleRefreshToken)  || '',
+    CFG_GOOGLE_CLIENT_ID:     localStorage.getItem(STORAGE.googleClientId)      || '',
+    CFG_GOOGLE_CLIENT_SECRET: localStorage.getItem(STORAGE.googleClientSecret)  || '',
+    CFG_HR_LIVE:              localStorage.getItem(STORAGE.hrLive) === '1'
+  });
+}
+
 function sendHrLive() {
   // Toggle defaults to burst-on-tap (1Hz only during ~30s windows after a
   // wrist flick) — matches config.json defaultValue: false.
@@ -236,6 +268,7 @@ function applyRecovered(payload, msgKey, storageKey) {
 
 Pebble.addEventListener('ready', function () {
   log('PKJS ready');
+  syncToClay();
   sendHrLive();
   sendToWatch({ REQUEST_CONFIG: 1 });
   refreshAll();
@@ -256,6 +289,7 @@ Pebble.addEventListener('appmessage', function (e) {
                           STORAGE.googleClientSecret) || filled;
   if (filled) {
     log('recovered config from watch flash; re-running fetches');
+    syncToClay();
     // Drop any stale access token so the next call uses the recovered creds.
     localStorage.removeItem(STORAGE.googleAccessToken);
     localStorage.removeItem(STORAGE.googleAccessExpiry);
@@ -294,6 +328,9 @@ Pebble.addEventListener('webviewclosed', function (e) {
   if (googClientId) localStorage.setItem(STORAGE.googleClientId, googClientId);
   if (googSecret)  localStorage.setItem(STORAGE.googleClientSecret, googSecret);
   localStorage.setItem(STORAGE.hrLive, hrLive ? '1' : '0');
+  // Keep Clay's store in sync so the next openConfiguration shows current
+  // values, not blanks (avoids accidental wipe via empty-fields Save).
+  syncToClay();
 
   // Mirror config to watch flash. Empty strings are sent through so the
   // watch can clear its persisted copy when the user blanks a field.
