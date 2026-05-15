@@ -122,7 +122,8 @@ function fetchCalendarList(token, cb) {
   var xhr = new XMLHttpRequest();
   xhr.open('GET',
     'https://www.googleapis.com/calendar/v3/users/me/calendarList'
-    + '?minAccessRole=reader&fields=items(id,summary,selected,hidden,deleted)');
+    + '?minAccessRole=reader&showHidden=true'
+    + '&fields=items(id,summary,selected,hidden,deleted)');
   xhr.setRequestHeader('Authorization', 'Bearer ' + token);
   xhr.onload = function () {
     try {
@@ -132,9 +133,9 @@ function fetchCalendarList(token, cb) {
       // `selected !== false` filter let calendars where Google omits the
       // field (a documented "default is False" case) leak through —
       // including ones the user explicitly unchecked, since Google
-      // sometimes returns `undefined` instead of `false` for those. Also
-      // exclude `hidden:true` (calendar removed from the sidebar list
-      // entirely) and `deleted:true`.
+      // sometimes returns `undefined` instead of `false` for those.
+      // `showHidden=true` so we see hidden calendars in the log too;
+      // we still exclude them from the included set.
       var items = (data.items || []);
       items.forEach(function (c) {
         log('cal', c.summary || '(no summary)',
@@ -142,12 +143,12 @@ function fetchCalendarList(token, cb) {
             'hidden=' + JSON.stringify(c.hidden),
             'deleted=' + JSON.stringify(c.deleted));
       });
-      var ids = items
+      var picks = items
         .filter(function (c) {
           return c.selected === true && !c.hidden && !c.deleted;
         })
-        .map(function (c) { return c.id; });
-      cb(ids);
+        .map(function (c) { return { id: c.id, name: c.summary }; });
+      cb(picks);
     } catch (e) { reportCalError('list parse: ' + e.message); cb([]); }
   };
   xhr.onerror = function () { reportCalError('list net err'); cb([]); };
@@ -173,28 +174,39 @@ function fetchNextFromCalendar(token, calId, timeMin, timeMax, cb) {
   xhr.send();
 }
 
+// Lookahead window for the "next event" calendar widget. 7 days catches
+// the common case where the next event is just past tomorrow (e.g. late
+// at night looking ahead) without making the widget noisy with events
+// two weeks out — the watch only ever surfaces the single earliest one.
+var CAL_LOOKAHEAD_MS = 7 * 24 * 60 * 60 * 1000;
+
 function fetchNextCalendarEvent() {
   refreshGoogleToken(function (token) {
     if (!token) { log('no google token'); return; }
     var now = new Date();
-    var soon = new Date(now.getTime() + 24 * 60 * 60 * 1000);
+    var soon = new Date(now.getTime() + CAL_LOOKAHEAD_MS);
     var timeMin = now.toISOString();
     var timeMax = soon.toISOString();
 
-    fetchCalendarList(token, function (calIds) {
-      if (calIds.length === 0) {
+    fetchCalendarList(token, function (cals) {
+      if (cals.length === 0) {
         sendToWatch({ CAL_TITLE: 'No upcoming event', CAL_TIME: '' });
         return;
       }
-      var pending = calIds.length;
+      var pending = cals.length;
       var bestEvent = null;
       var bestTs = Infinity;
-      calIds.forEach(function (calId) {
-        fetchNextFromCalendar(token, calId, timeMin, timeMax, function (event) {
+      cals.forEach(function (cal) {
+        fetchNextFromCalendar(token, cal.id, timeMin, timeMax, function (event) {
           if (event) {
+            log('cal-event', cal.name,
+                '"' + (event.summary || '(no title)') + '"',
+                event.start.dateTime || event.start.date);
             var startStr = event.start.dateTime || event.start.date;
             var ts = new Date(startStr).getTime();
             if (ts < bestTs) { bestTs = ts; bestEvent = event; }
+          } else {
+            log('cal-event', cal.name, '(none in lookahead)');
           }
           if (--pending === 0) emitBestEvent(bestEvent);
         });
@@ -209,10 +221,21 @@ function emitBestEvent(event) {
     return;
   }
   var d = new Date(event.start.dateTime || event.start.date);
+  var now = new Date();
+  // Compare local calendar days, not 24h-aligned buckets, so a midnight
+  // event on the next calendar day shows as "tomorrow" even if it's <24h
+  // away. >=2 days out also gets a weekday prefix (Mon/Tue/...) so a
+  // 7-day-out event is unambiguous.
+  var startOfTodayMs = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+  var dayDelta = Math.floor((d.getTime() - startOfTodayMs) / (24 * 60 * 60 * 1000));
   var hh = d.getHours();
   var mm = d.getMinutes();
-  var label = ((hh % 12) || 12) + ':' + (mm < 10 ? '0' + mm : mm)
+  var time = ((hh % 12) || 12) + ':' + (mm < 10 ? '0' + mm : mm)
     + (hh < 12 ? 'a' : 'p');
+  var weekdays = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+  var label = (dayDelta <= 0) ? time
+            : (dayDelta === 1) ? ('Tmrw ' + time)
+            : (weekdays[d.getDay()] + ' ' + time);
   sendToWatch({
     CAL_TITLE: (event.summary || '(no title)').substring(0, 48),
     CAL_TIME: label,
