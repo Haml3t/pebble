@@ -60,6 +60,13 @@ static int s_screen_w, s_screen_h;
 static GRect s_hr_rect, s_weather_rect, s_metronome_rect, s_np_rect, s_cal_rect;
 
 static char s_hr_buf[16];
+// Timestamp of the most recent HR sample we observed via the health event
+// handler. We treat the cached HR value as stale (and render "--") when
+// the elapsed time since that timestamp exceeds twice the current sample
+// period — caused by skin-contact loss, sensor warmup, or the sensor
+// briefly failing to produce a reading. Without this, `peek` keeps
+// returning the *last good* number indefinitely so the watchface lies.
+static time_t s_last_hr_sample_ts = 0;
 static char s_weather_buf[32];
 static char s_metronome_buf[8];
 static char s_now_playing_buf[96];
@@ -258,10 +265,19 @@ static void update_metronome_chip(void) {
 
 static void update_heart_rate(void) {
   long hr = 0;
+  bool stale = false;
 #if defined(PBL_HEALTH)
   hr = (long)health_service_peek_current_value(HealthMetricHeartRateRawBPM);
+  // Stale if no new sample arrived in the last 2*period seconds. 2x gives
+  // a one-period grace window: at 60s background we tolerate ~120s gaps
+  // (typical for momentary skin-contact dropouts) before showing "--".
+  int period = s_hr_live ? 1 : (s_hr_burst_timer ? 1 : HR_BACKGROUND_PERIOD_S);
+  int max_age = period * 2;
+  if (max_age < 30) max_age = 30;  // floor for the 1Hz burst case
+  stale = (s_last_hr_sample_ts == 0) ||
+          ((time(NULL) - s_last_hr_sample_ts) > max_age);
 #endif
-  if (hr > 0) {
+  if (hr > 0 && !stale) {
     snprintf(s_hr_buf, sizeof(s_hr_buf), "%ld", hr);
 #if HR_COMPARE_LOG_ENABLED && defined(PBL_HEALTH)
     // Format: "HRCMP <unix_ts> <raw_bpm> <filtered_bpm>". Filtered is 0
@@ -516,7 +532,10 @@ static void tick_handler(struct tm *tick_time, TimeUnits units_changed) {
 static void health_event_handler(HealthEventType event, void *context) {
   if (event == HealthEventHeartRateUpdate ||
       event == HealthEventSignificantUpdate) {
-    if (event == HealthEventHeartRateUpdate) battery_tap_record_hr_sample();
+    if (event == HealthEventHeartRateUpdate) {
+      battery_tap_record_hr_sample();
+      s_last_hr_sample_ts = time(NULL);
+    }
     update_heart_rate();
   }
 }

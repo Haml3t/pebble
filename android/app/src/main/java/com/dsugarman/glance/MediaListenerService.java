@@ -45,6 +45,10 @@ public class MediaListenerService extends NotificationListenerService
     // which is what lets MetronomeService start as a foreground service when
     // the metronome app opens on the watch.
     private PebbleKit.PebbleDataReceiver metronomeReceiver;
+    // Third receiver: drains the battery_tap DataLogging session into a CSV
+    // for post-hoc battery analysis. See BattapLogger for the wire format
+    // and where the file lands on the phone.
+    private PebbleKit.PebbleDataLogReceiver battapReceiver;
     private final MediaController.Callback controllerCb = new MediaController.Callback() {
         @Override
         public void onMetadataChanged(MediaMetadata metadata) {
@@ -115,6 +119,15 @@ public class MediaListenerService extends NotificationListenerService
         };
         registerReceiver(metronomeReceiver,
                 new IntentFilter("com.getpebble.action.app.RECEIVE"),
+                Context.RECEIVER_EXPORTED);
+
+        // DataLogging receiver — separate intent action ("dl.RECEIVE") from
+        // the per-message AppMessage path. Pebble companion app drains the
+        // watch's BattapRow queue here whenever BT is up; rows land in a
+        // CSV that survives BT dropouts and laptop reboots both.
+        battapReceiver = BattapLogger.newReceiver(WATCH_UUID);
+        registerReceiver(battapReceiver,
+                new IntentFilter("com.getpebble.action.dl.RECEIVE"),
                 Context.RECEIVER_EXPORTED);
 
         // Glance also receives this listener's pings — if the Glance app is
@@ -216,6 +229,10 @@ public class MediaListenerService extends NotificationListenerService
         if (metronomeReceiver != null) {
             try { unregisterReceiver(metronomeReceiver); } catch (Throwable ignored) {}
             metronomeReceiver = null;
+        }
+        if (battapReceiver != null) {
+            try { unregisterReceiver(battapReceiver); } catch (Throwable ignored) {}
+            battapReceiver = null;
         }
         detachController();
         super.onListenerDisconnected();
