@@ -53,6 +53,23 @@ static void flush_bt_accounting(uint32_t now) {
   }
 }
 
+// Cumulative sleep seconds in the run window. Negative if PBL_HEALTH is
+// off or the firmware can't fulfill the query (e.g. no historical data
+// yet at first boot). We mirror -1 into the log so post-hoc parsing can
+// distinguish "definitely zero sleep" from "no data".
+static long sleep_secs_since_boot(void) {
+#if defined(PBL_HEALTH)
+  time_t now = time(NULL);
+  HealthServiceAccessibilityMask m = health_service_metric_accessible(
+      HealthMetricSleepSeconds, (time_t)s_boot_epoch, now);
+  if (m & HealthServiceAccessibilityMaskAvailable) {
+    return (long)health_service_sum(HealthMetricSleepSeconds,
+                                    (time_t)s_boot_epoch, now);
+  }
+#endif
+  return -1;
+}
+
 static void emit_sample(const char *reason, BatteryChargeState st) {
   uint32_t now = (uint32_t)time(NULL);
   flush_hr_period_accounting(now);
@@ -60,9 +77,9 @@ static void emit_sample(const char *reason, BatteryChargeState st) {
   // Positional, space-separated — see battery_tap.h for column layout.
   // APP_LOG truncates the message body around 86 chars, so we trade keys
   // for brevity. A typical 12-hour run produces values that fit:
-  //   "BATTAP tick 1715792345 87 0 0 43200 60 4321 30 43170 540 240 43200 12"
+  //   "BATTAP tick 1715792345 87 0 0 43200 60 4321 30 43170 540 240 43200 12 28800"
   APP_LOG(APP_LOG_LEVEL_INFO,
-          "BATTAP %s %lu %d %d %d %lu %d %lu %lu %lu %lu %lu %lu %lu",
+          "BATTAP %s %lu %d %d %d %lu %d %lu %lu %lu %lu %lu %lu %lu %ld",
           reason,
           (unsigned long)now,
           (int)st.charge_percent,
@@ -76,7 +93,8 @@ static void emit_sample(const char *reason, BatteryChargeState st) {
           (unsigned long)s_am_tx_count,
           (unsigned long)s_am_rx_count,
           (unsigned long)s_bt_up_secs,
-          (unsigned long)s_tap_count);
+          (unsigned long)s_tap_count,
+          sleep_secs_since_boot());
 }
 
 static void battery_state_handler(BatteryChargeState st) {

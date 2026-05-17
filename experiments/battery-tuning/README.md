@@ -20,7 +20,7 @@ The watchface emits a positional, space-separated line on three triggers:
 Format (also documented in [`battery_tap.h`](../../src/c/battery_tap.h)):
 
 ```
-BATTAP <reason> <epoch> <pct> <chg> <plg> <up> <hrp> <hrs> <hrfast> <hrslow> <tx> <rx> <btup> <tap>
+BATTAP <reason> <epoch> <pct> <chg> <plg> <up> <hrp> <hrs> <hrfast> <hrslow> <tx> <rx> <btup> <tap> <slp>
 ```
 
 | Field    | Meaning                                                |
@@ -39,6 +39,7 @@ BATTAP <reason> <epoch> <pct> <chg> <plg> <up> <hrp> <hrs> <hrfast> <hrslow> <tx
 | rx       | cumulative AppMessage inbox-received count             |
 | btup     | cumulative seconds Pebble-app BT connection was up     |
 | tap      | cumulative `accel_tap_service` callbacks               |
+| slp      | `health_service_sum(SleepSeconds, boot, now)` (or -1)  |
 
 All counters are RAM-only and reset on app restart. Don't compare absolute
 counter values across `init` lines; only deltas within a single run mean

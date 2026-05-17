@@ -8,7 +8,7 @@
 // spent at fast/slow HR period), and emits a single positional APP_LOG line:
 //
 //   BATTAP <reason> <epoch> <pct> <chg> <plg> <up> <hrp> <hrs> <hrfast>
-//          <hrslow> <tx> <rx> <btup> <tap>
+//          <hrslow> <tx> <rx> <btup> <tap> <slp>
 //
 // Fields are positional (not key=value) because Pebble's APP_LOG truncates
 // around ~86 chars of message body; key=value names blow that budget once
@@ -27,6 +27,9 @@
 //   rx     : cumulative AppMessage inbox_received count
 //   btup   : cumulative seconds the Pebble-app BT connection was up
 //   tap    : cumulative accel_tap_service callbacks
+//   slp    : `health_service_sum(HealthMetricSleepSeconds, boot, now)` —
+//            firmware's cumulative sleep estimate over the run window.
+//            -1 if unavailable (no PBL_HEALTH or query failed).
 //
 // Emitted on every battery percent transition and every 5 minutes. The
 // 10%-quantized BatteryChargeState means transitions are sparse; the 5-min
