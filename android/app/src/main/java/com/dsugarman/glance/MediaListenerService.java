@@ -36,6 +36,7 @@ public class MediaListenerService extends NotificationListenerService
     private static final int KEY_ART_OFFSET      = 10008;
     private static final int KEY_ART_TOTAL       = 10009;
     private static final int KEY_REQUEST_REFRESH = 10014;
+    private static final int KEY_BATTAP_BLOB     = 10018;
 
     private MediaSessionManager sessionManager;
     private MediaController activeController;
@@ -103,6 +104,16 @@ public class MediaListenerService extends NotificationListenerService
                     // Refresh the metronome chip on Glance from cached prefs
                     // (avoids waking MetronomeService just to read the value).
                     pushMetronomeMinutesToGlance(ctx);
+                }
+                // Fallback transport for the battery_tap telemetry — Core
+                // Devices' companion app doesn't bridge DataLogging to
+                // PebbleKit classic clients, so the watch also fires each
+                // BATTAP row as an AppMessage byte-array. Same CSV sink.
+                if (data.contains(KEY_BATTAP_BLOB)) {
+                    byte[] blob = data.getBytes(KEY_BATTAP_BLOB);
+                    if (blob != null && blob.length >= 46) {
+                        BattapLogger.appendRow(ctx, blob);
+                    }
                 }
             }
         };

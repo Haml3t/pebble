@@ -147,29 +147,47 @@ static void emit_sample(BattapReason reason, BatteryChargeState st) {
           (unsigned long)s_tap_count,
           slp);
 
-  // Same data, byte-encoded, into the DataLogging queue — survives BT
-  // dropouts (640 KB on-watch buffer) and gets drained to the Android
-  // companion whenever it's reachable. APP_LOG above is the live tail;
-  // this is the durable record.
+  // Build the row once and ship it through both transports.
+  BattapRow row = {
+    .epoch        = now,
+    .reason       = (uint8_t)reason,
+    .pct          = (uint8_t)st.charge_percent,
+    .is_charging  = st.is_charging ? 1 : 0,
+    .is_plugged   = st.is_plugged ? 1 : 0,
+    .uptime_secs  = uptime,
+    .hr_period_s  = (uint16_t)s_current_hr_period,
+    .hr_samples   = s_hr_samples_total,
+    .hr_fast_secs = s_hr_fast_secs,
+    .hr_slow_secs = s_hr_slow_secs,
+    .am_tx_count  = s_am_tx_count,
+    .am_rx_count  = s_am_rx_count,
+    .bt_up_secs   = s_bt_up_secs,
+    .tap_count    = s_tap_count,
+    .sleep_secs   = (int32_t)slp,
+  };
+
+  // DataLogging path — survives BT dropouts (640 KB on-watch buffer),
+  // drains to the companion app via legacy PebbleKit's dl.RECEIVE
+  // broadcast. As of 2026-05, coredevices.coreapp v1.1.0.6 reports
+  // DataLoggingSupport=0 to PebbleKitProvider, so this side is dormant —
+  // but harmless, and gets us free historical capture if a future
+  // companion-app build enables the bridge.
   if (s_log) {
-    BattapRow row = {
-      .epoch        = now,
-      .reason       = (uint8_t)reason,
-      .pct          = (uint8_t)st.charge_percent,
-      .is_charging  = st.is_charging ? 1 : 0,
-      .is_plugged   = st.is_plugged ? 1 : 0,
-      .uptime_secs  = uptime,
-      .hr_period_s  = (uint16_t)s_current_hr_period,
-      .hr_samples   = s_hr_samples_total,
-      .hr_fast_secs = s_hr_fast_secs,
-      .hr_slow_secs = s_hr_slow_secs,
-      .am_tx_count  = s_am_tx_count,
-      .am_rx_count  = s_am_rx_count,
-      .bt_up_secs   = s_bt_up_secs,
-      .tap_count    = s_tap_count,
-      .sleep_secs   = (int32_t)slp,
-    };
     data_logging_log(s_log, &row, 1);
+  }
+
+  // AppMessage path — fire-and-forget. Core Devices DOES bridge
+  // AppMessage to legacy PebbleKit clients (the BattapLogger receiver
+  // in MediaListenerService catches it). Requires BT up at send time
+  // (no on-watch retry); a failed enqueue here just means this row's
+  // CSV entry is skipped — APP_LOG and the dormant DataLog queue both
+  // still have it. We deliberately don't ack/retry: the metronome
+  // outbox would deadlock if we waited on a callback for every emit.
+  DictionaryIterator *out;
+  if (app_message_outbox_begin(&out) == APP_MSG_OK) {
+    dict_write_data(out, MESSAGE_KEY_BATTAP_BLOB,
+                    (const uint8_t *)&row, sizeof(row));
+    app_message_outbox_send();
   }
 }
 

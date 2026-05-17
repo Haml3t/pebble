@@ -58,7 +58,12 @@ public class BattapLogger {
         };
     }
 
-    private static void appendRow(Context ctx, byte[] data) {
+    /**
+     * Append a 46-byte BattapRow to the CSV. Public so the AppMessage path
+     * in {@link MediaListenerService} can dispatch here when a BATTAP_BLOB
+     * lands (parallel to the DataLog receiver path above).
+     */
+    public static void appendRow(Context ctx, byte[] data) {
         // Mirror of struct BattapRow in src/c/battery_tap.c. Pebble is
         // little-endian (STM32 ARM Cortex-M). The struct is __packed so
         // there's no padding to skip.

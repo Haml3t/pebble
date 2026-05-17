@@ -43,7 +43,8 @@
       "REQUEST_REFRESH",
       "CFG_HR_LIVE",
       "REQUEST_CONFIG",
-      "METRONOME_MINUTES_TODAY"
+      "METRONOME_MINUTES_TODAY",
+      "BATTAP_BLOB"
     ],
     "resources": {
       "media": [
