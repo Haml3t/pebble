@@ -30,6 +30,7 @@ static TextLayer *s_action_layer;
 static TextLayer *s_stats_layer;
 static TextLayer *s_rec_layer;
 static Layer     *s_beat_dots_layer;
+static Layer     *s_rec_indicator_layer;
 
 static char s_bpm_text[8];
 static char s_action_text[24];
@@ -38,6 +39,7 @@ static char s_rec_text[24];
 
 static int  s_current_bpm = DEFAULT_BPM;
 static bool s_ticking = false;
+static bool s_recording = false;    // mirrored from Android MediaRecorder state
 static AppTimer *s_tick_timer = NULL;
 static int  s_beat_index = 0;       // 0..3, cycles for the dot indicator
 
@@ -57,6 +59,13 @@ static void update_action_text(void);
 static void update_bpm_text(void);
 
 // === Drawing =============================================================
+
+static void rec_indicator_update_proc(Layer *layer, GContext *ctx) {
+  if (!s_recording) return;
+  GRect b = layer_get_bounds(layer);
+  graphics_context_set_fill_color(ctx, GColorRed);
+  graphics_fill_rect(ctx, b, 0, GCornerNone);
+}
 
 static void beat_dots_update_proc(Layer *layer, GContext *ctx) {
   GRect b = layer_get_bounds(layer);
@@ -201,6 +210,13 @@ static void inbox_received_handler(DictionaryIterator *iter, void *context) {
     s_week_minutes = (int)t->value->int32;
     stats_changed = true;
   }
+  if ((t = dict_find(iter, MESSAGE_KEY_RECORDING_STATE))) {
+    bool now = t->value->int32 != 0;
+    if (now != s_recording) {
+      s_recording = now;
+      if (s_rec_indicator_layer) layer_mark_dirty(s_rec_indicator_layer);
+    }
+  }
   if (stats_changed) update_stats_text();
 }
 
@@ -312,6 +328,13 @@ static void window_load(Window *window) {
   text_layer_set_text_alignment(s_rec_layer, GTextAlignmentCenter);
   layer_add_child(s_root_layer, text_layer_get_layer(s_rec_layer));
 
+  // Solid red square in the top-right corner — only painted when the Android
+  // side reports MediaRecorder is actively running. Sized to be unambiguous
+  // at a glance without crowding the BPM number.
+  s_rec_indicator_layer = layer_create(GRect(b.size.w - 18, 6, 12, 12));
+  layer_set_update_proc(s_rec_indicator_layer, rec_indicator_update_proc);
+  layer_add_child(s_root_layer, s_rec_indicator_layer);
+
   update_bpm_text();
   update_action_text();
   update_stats_text();
@@ -325,6 +348,7 @@ static void window_unload(Window *window) {
   text_layer_destroy(s_stats_layer);
   text_layer_destroy(s_rec_layer);
   layer_destroy(s_beat_dots_layer);
+  layer_destroy(s_rec_indicator_layer);
 }
 
 static void init(void) {

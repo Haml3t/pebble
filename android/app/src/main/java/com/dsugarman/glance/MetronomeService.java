@@ -65,6 +65,7 @@ public class MetronomeService extends Service {
     static final int KEY_TODAY_MINUTES_REQUEST = 10005;
     static final int KEY_TODAY_MINUTES         = 10006;
     static final int KEY_WEEK_MINUTES          = 10007;
+    static final int KEY_RECORDING_STATE       = 10008;
 
     // Glance message key for the metronome chip — must match the index of
     // METRONOME_MINUTES_TODAY in the top-level package.json messageKeys list.
@@ -260,9 +261,11 @@ public class MetronomeService extends Service {
         // Periodic flushes have already committed everything before that.
         flushAccumulatedSeconds();
         cancelFlush();
+        // stopRecording() needs sessionStartMs to build the final filename
+        // and sidecar — zero it out only after the rename is done.
+        stopRecording();
         sessionStartMs = 0;
         lastFlushMs = 0;
-        stopRecording();
         sendTotalsToWatch();
         sendMinutesToGlance();
         stopForeground(true);
@@ -322,11 +325,13 @@ public class MetronomeService extends Service {
             recorder.prepare();
             recorder.start();
             Log.i(TAG, "recording → " + inProgressFile.getAbsolutePath());
+            sendRecordingStateToWatch(true);
         } catch (Exception e) {
             Log.e(TAG, "MediaRecorder start failed", e);
             try { if (recorder != null) recorder.release(); } catch (Throwable ignored) {}
             recorder = null;
             inProgressFile = null;
+            sendRecordingStateToWatch(false);
         }
     }
 
@@ -340,6 +345,7 @@ public class MetronomeService extends Service {
         try { recorder.reset();   } catch (Throwable ignored) {}
         try { recorder.release(); } catch (Throwable ignored) {}
         recorder = null;
+        sendRecordingStateToWatch(false);
         if (inProgressFile != null && inProgressFile.exists()) {
             String range;
             if (sessionBpmMin < 0) {
@@ -431,6 +437,13 @@ public class MetronomeService extends Service {
         PebbleDictionary d = new PebbleDictionary();
         d.addInt32(KEY_TODAY_MINUTES, todayMinutes());
         d.addInt32(KEY_WEEK_MINUTES,  weekMinutes());
+        PebbleKit.sendDataToPebble(this, METRONOME_UUID, d);
+    }
+
+    private void sendRecordingStateToWatch(boolean on) {
+        if (!PebbleKit.isWatchConnected(this)) return;
+        PebbleDictionary d = new PebbleDictionary();
+        d.addInt32(KEY_RECORDING_STATE, on ? 1 : 0);
         PebbleKit.sendDataToPebble(this, METRONOME_UUID, d);
     }
 

@@ -27,7 +27,8 @@
       "BPM_CHANGED",
       "TODAY_MINUTES_REQUEST",
       "TODAY_MINUTES",
-      "WEEK_MINUTES"
+      "WEEK_MINUTES",
+      "RECORDING_STATE"
     ],
     "resources": {
       "media": []
