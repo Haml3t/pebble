@@ -170,6 +170,10 @@ public class MediaListenerService extends NotificationListenerService
                            ? data.getInteger(MetronomeService.KEY_TICK_STOPPED) : null;
             Long bpm     = data.contains(MetronomeService.KEY_BPM_CHANGED)
                            ? data.getInteger(MetronomeService.KEY_BPM_CHANGED) : null;
+            Long marker  = data.contains(MetronomeService.KEY_MARKER)
+                           ? data.getInteger(MetronomeService.KEY_MARKER) : null;
+            Long recStop = data.contains(MetronomeService.KEY_STOP_RECORDING)
+                           ? data.getInteger(MetronomeService.KEY_STOP_RECORDING) : null;
 
             if (opened != null) {
                 send = serviceIntent(ctx, MetronomeService.EVT_OPENED, opened.intValue());
@@ -181,6 +185,10 @@ public class MediaListenerService extends NotificationListenerService
                 send = serviceIntent(ctx, MetronomeService.EVT_TICK_OFF, 0);
             } else if (bpm != null) {
                 send = serviceIntent(ctx, MetronomeService.EVT_BPM, bpm.intValue());
+            } else if (marker != null) {
+                send = serviceIntent(ctx, MetronomeService.EVT_MARKER, 0);
+            } else if (recStop != null) {
+                send = serviceIntent(ctx, MetronomeService.EVT_REC_STOP, 0);
             }
         } catch (Throwable t) {
             Log.e(TAG, "metronome dict decode failed", t);

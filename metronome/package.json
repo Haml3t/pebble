@@ -28,7 +28,9 @@
       "TODAY_MINUTES_REQUEST",
       "TODAY_MINUTES",
       "WEEK_MINUTES",
-      "RECORDING_STATE"
+      "RECORDING_STATE",
+      "MARKER",
+      "STOP_RECORDING"
     ],
     "resources": {
       "media": []

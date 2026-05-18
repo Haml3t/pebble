@@ -19,6 +19,11 @@
 // without overshooting on quick adjustments.
 #define BPM_REPEAT_MS 150
 
+// Holding UP+DOWN together for this long toggles BPM-edit mode. Perf mode
+// is the default — UP marks a section, DOWN stops recording. Edit mode
+// reassigns UP/DOWN to ±1 BPM (the classic behavior).
+#define MODE_HOLD_MS 2000
+
 #define PERSIST_KEY_LAST_BPM 1
 
 static Window *s_window;
@@ -40,8 +45,15 @@ static char s_rec_text[24];
 static int  s_current_bpm = DEFAULT_BPM;
 static bool s_ticking = false;
 static bool s_recording = false;    // mirrored from Android MediaRecorder state
+static bool s_edit_mode = false;    // true → UP/DOWN adjust BPM; false → perf mode (UP=marker, DOWN=stop rec)
 static AppTimer *s_tick_timer = NULL;
 static int  s_beat_index = 0;       // 0..3, cycles for the dot indicator
+
+// Both-button-held mode toggle: track each button's raw press state and
+// schedule an AppTimer that only fires if both stay held for MODE_HOLD_MS.
+static bool s_up_pressed = false;
+static bool s_down_pressed = false;
+static AppTimer *s_hold_timer = NULL;
 
 static time_t s_app_start_ts;       // when the metronome app launched
 static time_t s_tick_start_ts;      // when the current tick run began
@@ -161,12 +173,71 @@ static void stop_ticking(void) {
 
 // === Buttons =============================================================
 
+static bool both_held(void) { return s_up_pressed && s_down_pressed; }
+
+static void cancel_hold_timer(void) {
+  if (s_hold_timer) {
+    app_timer_cancel(s_hold_timer);
+    s_hold_timer = NULL;
+  }
+}
+
+static void mode_toggle_callback(void *ctx) {
+  s_hold_timer = NULL;
+  s_edit_mode = !s_edit_mode;
+  // Distinct confirmation vibe — three short pulses, unmistakable vs a
+  // single beat tap — so the user knows the mode flipped without looking.
+  static const uint32_t segs[] = { 60, 80, 60, 80, 60 };
+  VibePattern pat = { .durations = segs, .num_segments = 5 };
+  vibes_enqueue_custom_pattern(pat);
+  text_layer_set_text_color(s_bpm_layer,
+                            s_edit_mode ? GColorYellow : GColorWhite);
+  update_action_text();
+}
+
+static void check_start_hold_timer(void) {
+  if (s_up_pressed && s_down_pressed && !s_hold_timer) {
+    s_hold_timer = app_timer_register(MODE_HOLD_MS, mode_toggle_callback, NULL);
+  }
+}
+
+static void up_raw_down(ClickRecognizerRef r, void *ctx) {
+  s_up_pressed = true;
+  check_start_hold_timer();
+}
+static void up_raw_up(ClickRecognizerRef r, void *ctx) {
+  s_up_pressed = false;
+  cancel_hold_timer();
+}
+static void down_raw_down(ClickRecognizerRef r, void *ctx) {
+  s_down_pressed = true;
+  check_start_hold_timer();
+}
+static void down_raw_up(ClickRecognizerRef r, void *ctx) {
+  s_down_pressed = false;
+  cancel_hold_timer();
+}
+
 static void up_click(ClickRecognizerRef recognizer, void *context) {
-  set_bpm(s_current_bpm + 1, true);
+  // While both are held we're mid-gesture toward a mode toggle — suppress
+  // the per-button action. The first button's initial click can still slip
+  // through if the user presses non-simultaneously; that's a tolerable
+  // edge case (one stray ±1 BPM or one stray marker).
+  if (both_held()) return;
+  if (s_edit_mode) {
+    set_bpm(s_current_bpm + 1, true);
+  } else {
+    send_event(MESSAGE_KEY_MARKER, 1);
+  }
 }
 
 static void down_click(ClickRecognizerRef recognizer, void *context) {
-  set_bpm(s_current_bpm - 1, true);
+  if (both_held()) return;
+  if (s_edit_mode) {
+    set_bpm(s_current_bpm - 1, true);
+  } else {
+    send_event(MESSAGE_KEY_STOP_RECORDING, 1);
+  }
 }
 
 static void select_click(ClickRecognizerRef recognizer, void *context) {
@@ -175,10 +246,15 @@ static void select_click(ClickRecognizerRef recognizer, void *context) {
 }
 
 static void click_config_provider(void *context) {
-  // Autorepeat on hold for ±1 BPM; tap is also handled as the first repeat.
+  // single_repeating fires on press + every BPM_REPEAT_MS while held —
+  // gives autorepeat for ±BPM in edit mode and "hold to mark many" in perf
+  // mode. Raw subscriptions run alongside and only track press state for
+  // the both-held gesture; they don't fire actions themselves.
   window_single_repeating_click_subscribe(BUTTON_ID_UP, BPM_REPEAT_MS, up_click);
   window_single_repeating_click_subscribe(BUTTON_ID_DOWN, BPM_REPEAT_MS, down_click);
   window_single_click_subscribe(BUTTON_ID_SELECT, select_click);
+  window_raw_click_subscribe(BUTTON_ID_UP, up_raw_down, up_raw_up, NULL);
+  window_raw_click_subscribe(BUTTON_ID_DOWN, down_raw_down, down_raw_up, NULL);
 }
 
 // === AppMessage ==========================================================
@@ -223,8 +299,12 @@ static void inbox_received_handler(DictionaryIterator *iter, void *context) {
 // === UI text builders ====================================================
 
 static void update_action_text(void) {
-  snprintf(s_action_text, sizeof(s_action_text),
-           s_ticking ? "SELECT to stop" : "SELECT to start");
+  if (s_edit_mode) {
+    snprintf(s_action_text, sizeof(s_action_text), "+/- to set BPM");
+  } else {
+    snprintf(s_action_text, sizeof(s_action_text),
+             s_ticking ? "SELECT to stop" : "SELECT to start");
+  }
   text_layer_set_text(s_action_layer, s_action_text);
 }
 

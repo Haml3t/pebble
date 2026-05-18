@@ -66,6 +66,8 @@ public class MetronomeService extends Service {
     static final int KEY_TODAY_MINUTES         = 10006;
     static final int KEY_WEEK_MINUTES          = 10007;
     static final int KEY_RECORDING_STATE       = 10008;
+    static final int KEY_MARKER                = 10009;
+    static final int KEY_STOP_RECORDING        = 10010;
 
     // Glance message key for the metronome chip — must match the index of
     // METRONOME_MINUTES_TODAY in the top-level package.json messageKeys list.
@@ -81,6 +83,8 @@ public class MetronomeService extends Service {
     static final String EVT_TICK_OFF = "tick_off";
     static final String EVT_BPM      = "bpm";
     static final String EVT_QUERY    = "query";
+    static final String EVT_MARKER   = "marker";
+    static final String EVT_REC_STOP = "rec_stop";
 
     // NotificationChannel settings are immutable after creation, so to lift
     // importance from LOW → DEFAULT we have to use a new id. Bump this
@@ -96,8 +100,12 @@ public class MetronomeService extends Service {
     private File inProgressFile;
     private File inProgressSidecar;
     private long sessionStartMs;     // when the current app-open began
-    private int  sessionBpmMin = -1; // -1 until first BPM seen this session
-    private int  sessionBpmMax = -1;
+    // Recording lifecycle is no longer 1:1 with app-open — DOWN stops it,
+    // SELECT (metronome start) restarts it, so a session can produce multiple
+    // .m4a files. These track the *currently in-flight* recording.
+    private long recordingStartMs;   // 0 when no MediaRecorder is running
+    private int  recordingBpmMin = -1; // -1 until first BPM seen this recording
+    private int  recordingBpmMax = -1;
 
     private long currentTickStartMs; // 0 when not ticking
     private int  currentBpm = -1;
@@ -156,18 +164,21 @@ public class MetronomeService extends Service {
         // TICK_ON / TICK_OFF — promote that into a synthetic OPEN so the
         // recording can recover instead of dropping the rest of the
         // session on the floor.
-        if (sessionStartMs == 0 && !EVT_OPENED.equals(evt) && !EVT_CLOSED.equals(evt)) {
+        if (sessionStartMs == 0 && !EVT_OPENED.equals(evt) && !EVT_CLOSED.equals(evt)
+                && !EVT_MARKER.equals(evt) && !EVT_REC_STOP.equals(evt)) {
             Log.w(TAG, "no session state; synthesizing OPEN from " + evt);
             handleOpened(value > 0 ? value : 100);
         }
 
         switch (evt) {
-            case EVT_OPENED:  handleOpened(value);  break;
-            case EVT_BPM:     handleBpm(value);     break;
-            case EVT_TICK_ON: handleTickStart(value); break;
-            case EVT_TICK_OFF: handleTickStop();    break;
-            case EVT_QUERY:   sendTotalsToWatch();  break;
-            case EVT_CLOSED:  handleClosed(); break;
+            case EVT_OPENED:   handleOpened(value);    break;
+            case EVT_BPM:      handleBpm(value);       break;
+            case EVT_TICK_ON:  handleTickStart(value); break;
+            case EVT_TICK_OFF: handleTickStop();       break;
+            case EVT_QUERY:    sendTotalsToWatch();    break;
+            case EVT_MARKER:   handleMarker();         break;
+            case EVT_REC_STOP: handleRecStop();        break;
+            case EVT_CLOSED:   handleClosed();         break;
         }
         return START_NOT_STICKY;
     }
@@ -175,11 +186,8 @@ public class MetronomeService extends Service {
     private void handleOpened(int initialBpm) {
         sessionStartMs = System.currentTimeMillis();
         lastFlushMs = sessionStartMs;
-        sessionBpmMin = initialBpm;
-        sessionBpmMax = initialBpm;
         currentBpm = initialBpm;
         currentTickStartMs = 0;
-        sidecarEvents.setLength(0);
         // startForeground is already called by onStartCommand before we get
         // here, so no need to do it again.
         startRecording();
@@ -234,12 +242,19 @@ public class MetronomeService extends Service {
 
     private void handleBpm(int bpm) {
         currentBpm = bpm;
-        if (sessionBpmMin < 0 || bpm < sessionBpmMin) sessionBpmMin = bpm;
-        if (sessionBpmMax < 0 || bpm > sessionBpmMax) sessionBpmMax = bpm;
+        if (recordingStartMs > 0) {
+            if (recordingBpmMin < 0 || bpm < recordingBpmMin) recordingBpmMin = bpm;
+            if (recordingBpmMax < 0 || bpm > recordingBpmMax) recordingBpmMax = bpm;
+        }
         logEvent("bpm", bpm);
     }
 
     private void handleTickStart(int bpm) {
+        if (bpm > 0) currentBpm = bpm;
+        // Starting the metronome should always produce a recording — if the
+        // user previously hit STOP_RECORDING via the down button, this gets
+        // them back to recording without needing a separate "start" button.
+        if (recorder == null) startRecording();
         if (bpm > 0) handleBpm(bpm);
         currentTickStartMs = System.currentTimeMillis();
         logEvent("tick_start", bpm > 0 ? bpm : currentBpm);
@@ -250,6 +265,25 @@ public class MetronomeService extends Service {
             currentTickStartMs = 0;
             logEvent("tick_stop", -1);
         }
+    }
+
+    private void handleMarker() {
+        if (recordingStartMs == 0) {
+            // No active recording — a marker would have nothing to attach to,
+            // so silently drop it rather than starting a recording just to
+            // hold one event.
+            Log.w(TAG, "marker dropped: no active recording");
+            return;
+        }
+        logEvent("marker", -1);
+    }
+
+    private void handleRecStop() {
+        // Idempotent: if there's no active recording, this is a no-op. The
+        // *session* keeps running either way — practice-time accounting and
+        // the foreground notification are tied to sessionStartMs, not the
+        // recording lifecycle.
+        if (recorder != null) stopRecording();
     }
 
     private void handleClosed() {
@@ -273,8 +307,10 @@ public class MetronomeService extends Service {
     }
 
     private void logEvent(String type, int bpm) {
-        if (sessionStartMs == 0) return;
-        long tMs = System.currentTimeMillis() - sessionStartMs;
+        // Events are sidecar entries for the current recording's audio file.
+        // No active recording → nowhere to put them; drop instead of buffering.
+        if (recordingStartMs == 0) return;
+        long tMs = System.currentTimeMillis() - recordingStartMs;
         if (sidecarEvents.length() > 0) sidecarEvents.append(",\n  ");
         sidecarEvents.append("{\"t_ms\":").append(tMs)
                      .append(",\"type\":\"").append(type).append("\"");
@@ -293,7 +329,7 @@ public class MetronomeService extends Service {
 
     private String startTimestamp() {
         return new SimpleDateFormat("yyyy-MM-dd_HH-mm-ss", Locale.US)
-                .format(new Date(sessionStartMs));
+                .format(new Date(recordingStartMs));
     }
 
     private void startRecording() {
@@ -303,6 +339,12 @@ public class MetronomeService extends Service {
             Log.w(TAG, "RECORD_AUDIO not granted — skipping recording");
             return;
         }
+        // Each recording is its own file with its own timeline — reset state
+        // that was carried over from any previous recording in this session.
+        recordingStartMs = System.currentTimeMillis();
+        recordingBpmMin = currentBpm > 0 ? currentBpm : -1;
+        recordingBpmMax = currentBpm > 0 ? currentBpm : -1;
+        sidecarEvents.setLength(0);
         try {
             String basename = startTimestamp() + "_pending";
             inProgressFile = new File(metronomeDir(), basename + ".m4a");
@@ -331,6 +373,9 @@ public class MetronomeService extends Service {
             try { if (recorder != null) recorder.release(); } catch (Throwable ignored) {}
             recorder = null;
             inProgressFile = null;
+            recordingStartMs = 0;
+            recordingBpmMin = -1;
+            recordingBpmMax = -1;
             sendRecordingStateToWatch(false);
         }
     }
@@ -348,12 +393,12 @@ public class MetronomeService extends Service {
         sendRecordingStateToWatch(false);
         if (inProgressFile != null && inProgressFile.exists()) {
             String range;
-            if (sessionBpmMin < 0) {
+            if (recordingBpmMin < 0) {
                 range = "unknown";
-            } else if (sessionBpmMin == sessionBpmMax) {
-                range = sessionBpmMin + "bpm";
+            } else if (recordingBpmMin == recordingBpmMax) {
+                range = recordingBpmMin + "bpm";
             } else {
-                range = sessionBpmMin + "-" + sessionBpmMax + "bpm";
+                range = recordingBpmMin + "-" + recordingBpmMax + "bpm";
             }
             String finalBase = startTimestamp() + "_" + range;
             File renamedAudio = new File(inProgressFile.getParentFile(),
@@ -372,9 +417,9 @@ public class MetronomeService extends Service {
             // truncated one.
             try (FileWriter w = new FileWriter(renamedSidecar)) {
                 w.write("{\n");
-                w.write("  \"started_at_unix_ms\": " + sessionStartMs + ",\n");
-                w.write("  \"bpm_min\": " + sessionBpmMin + ",\n");
-                w.write("  \"bpm_max\": " + sessionBpmMax + ",\n");
+                w.write("  \"started_at_unix_ms\": " + recordingStartMs + ",\n");
+                w.write("  \"bpm_min\": " + recordingBpmMin + ",\n");
+                w.write("  \"bpm_max\": " + recordingBpmMax + ",\n");
                 w.write("  \"events\": [\n  ");
                 w.write(sidecarEvents.toString());
                 w.write("\n  ]\n");
@@ -388,6 +433,9 @@ public class MetronomeService extends Service {
         }
         inProgressFile = null;
         inProgressSidecar = null;
+        recordingStartMs = 0;
+        recordingBpmMin = -1;
+        recordingBpmMax = -1;
     }
 
     // === Daily tally =====================================================
@@ -503,12 +551,14 @@ public class MetronomeService extends Service {
             nm.createNotificationChannel(ch);
         }
         String contentText;
-        if (sessionStartMs > 0) {
-            int elapsedSec = (int) ((System.currentTimeMillis() - sessionStartMs) / 1000);
+        if (recordingStartMs > 0) {
+            int elapsedSec = (int) ((System.currentTimeMillis() - recordingStartMs) / 1000);
             contentText = "Recording (" + elapsedSec + "s) · BPM "
-                    + (sessionBpmMin < 0 ? "?" :
-                       sessionBpmMin == sessionBpmMax ? String.valueOf(sessionBpmMin)
-                           : (sessionBpmMin + "–" + sessionBpmMax));
+                    + (recordingBpmMin < 0 ? "?" :
+                       recordingBpmMin == recordingBpmMax ? String.valueOf(recordingBpmMin)
+                           : (recordingBpmMin + "–" + recordingBpmMax));
+        } else if (sessionStartMs > 0) {
+            contentText = "Session active (recording paused)";
         } else {
             contentText = "Recording from mic while watch app is open";
         }
