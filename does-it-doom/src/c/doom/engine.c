@@ -110,10 +110,10 @@ static const uint8_t s_tilemap[TILEMAP_H][TILEMAP_W] = {
 /*y= 7*/ {0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0},
 /*y= 8 Room A north wall  */ {0,0,0,0,0,0,0,0,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,0,0,0},
 /*y= 9 Room A interior     */ {0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0},
-/*y=10                      */ {0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0},
-/*y=11                      */ {0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0},
-/*y=12 (player at x=18.5)   */ {0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0},
-/*y=13                      */ {0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0},
+/*y=10 NUKAGE alcove top    */ {0,0,0,2,2,2,2,2,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0},
+/*y=11 alcove interior + W door into Room A   */ {0,0,0,2,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0},
+/*y=12 (player at x=18.5) — west doorway here */ {0,0,0,2,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0},
+/*y=13 NUKAGE alcove bottom */ {0,0,0,2,2,2,2,2,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0},
 /*y=14                      */ {0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0},
 /*y=15                      */ {0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0},
 /*y=16 Room A south wall    */ {0,0,0,0,0,0,0,0,1,1,1,1,1,1,1,1,1,1,0,0,1,1,1,1,1,1,1,1,1,0,0,0},
@@ -242,6 +242,10 @@ static void entities_init(void) {
   s_entities[2] = (entity_t){ .x = 20.5f, .y = 26.0f, .kind = SPR_IMP, .alive = true };
   // Imp 4: west side of room B, behind the NUKAGE pit.
   s_entities[3] = (entity_t){ .x = 14.0f, .y = 27.5f, .kind = SPR_IMP, .alive = true };
+  // Imp 5: ambush in the NUKAGE alcove west of Room A. You only meet this
+  // one if you wander west through the new doorway — the rest of the
+  // level can be cleared while ignoring it.
+  s_entities[4] = (entity_t){ .x =  5.5f, .y = 11.5f, .kind = SPR_IMP, .alive = true };
 }
 
 // Column z-buffer: perpendicular wall distance per column. Walls write
