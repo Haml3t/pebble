@@ -24,7 +24,23 @@
 // reassigns UP/DOWN to ±1 BPM (the classic behavior).
 #define MODE_HOLD_MS 2000
 
-#define PERSIST_KEY_LAST_BPM 1
+// Holding DOWN alone for this long stops recording. The hold gate exists
+// so an accidental tap mid-practice doesn't kill the session — recording
+// starts instantly on app-open and only stops on a deliberate hold.
+#define REC_STOP_HOLD_MS 2000
+
+// Holding SELECT alone for this long toggles beat-vibration mute. The
+// metronome keeps ticking (animation continues, recording continues) — we
+// just stop enqueuing the tactile pulse. Same 2s threshold as the other
+// hold gates for muscle-memory consistency.
+#define VIBE_MUTE_HOLD_MS 2000
+
+#define PERSIST_KEY_LAST_BPM       1
+// Last-known today/week minutes — cached so the watch shows the previous
+// totals instantly on app open, instead of "today -- week --" until the
+// Android companion's first response arrives.
+#define PERSIST_KEY_TODAY_MINUTES  2
+#define PERSIST_KEY_WEEK_MINUTES   3
 
 static Window *s_window;
 static Layer *s_root_layer;
@@ -46,18 +62,23 @@ static int  s_current_bpm = DEFAULT_BPM;
 static bool s_ticking = false;
 static bool s_recording = false;    // mirrored from Android MediaRecorder state
 static bool s_edit_mode = false;    // true → UP/DOWN adjust BPM; false → perf mode (UP=marker, DOWN=stop rec)
+static bool s_vibe_muted = false;   // true → suppress beat vibrate; animation + recording continue
 static AppTimer *s_tick_timer = NULL;
 static int  s_beat_index = 0;       // 0..3, cycles for the dot indicator
 
 // Both-button-held mode toggle: track each button's raw press state and
 // schedule an AppTimer that only fires if both stay held for MODE_HOLD_MS.
+// DOWN-alone hold (perf mode) drives a separate timer that stops recording
+// after REC_STOP_HOLD_MS — mutually exclusive with the mode-toggle timer.
 static bool s_up_pressed = false;
 static bool s_down_pressed = false;
 static AppTimer *s_hold_timer = NULL;
+static AppTimer *s_rec_stop_hold_timer = NULL;
 
 static time_t s_app_start_ts;       // when the metronome app launched
 static time_t s_tick_start_ts;      // when the current tick run began
 static int    s_session_accum_secs; // seconds ticking this app-open (sum of runs)
+static time_t s_rec_start_ts;       // when the current recording began (0 = no active rec)
 
 // Today/week totals supplied by the Android companion. -1 = not yet received.
 static int s_today_minutes = -1;
@@ -69,6 +90,7 @@ static void update_stats_text(void);
 static void update_rec_text(void);
 static void update_action_text(void);
 static void update_bpm_text(void);
+static void update_bpm_label(void);
 
 // === Drawing =============================================================
 
@@ -90,7 +112,10 @@ static void beat_dots_update_proc(Layer *layer, GContext *ctx) {
   for (int i = 0; i < n; i++) {
     GPoint p = GPoint(x0 + i * gap, y);
     if (s_ticking && i == s_beat_index) {
-      graphics_context_set_fill_color(ctx, GColorYellow);
+      // Dim the active-beat fill while muted — a subtle visual cue that
+      // the metronome is still pacing the user but silently.
+      graphics_context_set_fill_color(ctx,
+          s_vibe_muted ? GColorLightGray : GColorYellow);
       graphics_fill_circle(ctx, p, r);
     } else {
       graphics_context_set_stroke_color(ctx, GColorWhite);
@@ -121,6 +146,9 @@ static void set_bpm(int new_bpm, bool emit) {
 // === Tick loop ===========================================================
 
 static void vibrate_tap(void) {
+  // Mute gate: keeps the beat-loop architecture intact (timer keeps firing,
+  // s_beat_index keeps advancing, layer re-draws) — we just skip the vibe.
+  if (s_vibe_muted) return;
   static const uint32_t segments[] = { VIBE_PULSE_MS };
   VibePattern pat = { .durations = segments, .num_segments = 1 };
   vibes_enqueue_custom_pattern(pat);
@@ -182,6 +210,13 @@ static void cancel_hold_timer(void) {
   }
 }
 
+static void cancel_rec_stop_hold_timer(void) {
+  if (s_rec_stop_hold_timer) {
+    app_timer_cancel(s_rec_stop_hold_timer);
+    s_rec_stop_hold_timer = NULL;
+  }
+}
+
 static void mode_toggle_callback(void *ctx) {
   s_hold_timer = NULL;
   s_edit_mode = !s_edit_mode;
@@ -195,27 +230,56 @@ static void mode_toggle_callback(void *ctx) {
   update_action_text();
 }
 
-static void check_start_hold_timer(void) {
-  if (s_up_pressed && s_down_pressed && !s_hold_timer) {
-    s_hold_timer = app_timer_register(MODE_HOLD_MS, mode_toggle_callback, NULL);
+static void rec_stop_hold_callback(void *ctx) {
+  s_rec_stop_hold_timer = NULL;
+  // Long single buzz — distinct from beat-tap and from the 5-pulse mode toggle
+  // so the user can confirm the stop-recording fired even while looking away.
+  static const uint32_t segs[] = { 250 };
+  VibePattern pat = { .durations = segs, .num_segments = 1 };
+  vibes_enqueue_custom_pattern(pat);
+  send_event(MESSAGE_KEY_STOP_RECORDING, 1);
+}
+
+// Decide which hold timer (if any) should be running based on current button
+// state. Both-held mode-toggle always wins over DOWN-alone rec-stop, so the
+// user can still gesture into edit mode without their in-progress DOWN press
+// stopping recording.
+static void update_hold_timers(void) {
+  if (s_up_pressed && s_down_pressed) {
+    cancel_rec_stop_hold_timer();
+    if (!s_hold_timer) {
+      s_hold_timer = app_timer_register(MODE_HOLD_MS, mode_toggle_callback, NULL);
+    }
+  } else if (s_down_pressed && !s_edit_mode && s_recording) {
+    // Only arm the stop-hold while recording is *currently* on. Without this
+    // guard, holding DOWN from a stopped state would fire START_RECORDING via
+    // down_click (instant) and then STOP_RECORDING via the timer 2s later.
+    cancel_hold_timer();
+    if (!s_rec_stop_hold_timer) {
+      s_rec_stop_hold_timer = app_timer_register(
+          REC_STOP_HOLD_MS, rec_stop_hold_callback, NULL);
+    }
+  } else {
+    cancel_hold_timer();
+    cancel_rec_stop_hold_timer();
   }
 }
 
 static void up_raw_down(ClickRecognizerRef r, void *ctx) {
   s_up_pressed = true;
-  check_start_hold_timer();
+  update_hold_timers();
 }
 static void up_raw_up(ClickRecognizerRef r, void *ctx) {
   s_up_pressed = false;
-  cancel_hold_timer();
+  update_hold_timers();
 }
 static void down_raw_down(ClickRecognizerRef r, void *ctx) {
   s_down_pressed = true;
-  check_start_hold_timer();
+  update_hold_timers();
 }
 static void down_raw_up(ClickRecognizerRef r, void *ctx) {
   s_down_pressed = false;
-  cancel_hold_timer();
+  update_hold_timers();
 }
 
 static void up_click(ClickRecognizerRef recognizer, void *context) {
@@ -235,14 +299,34 @@ static void down_click(ClickRecognizerRef recognizer, void *context) {
   if (both_held()) return;
   if (s_edit_mode) {
     set_bpm(s_current_bpm - 1, true);
-  } else {
-    send_event(MESSAGE_KEY_STOP_RECORDING, 1);
+    return;
+  }
+  // Perf mode: DOWN is asymmetric — instant-on, deliberate-off. A tap while
+  // recording is *off* re-arms recording immediately; stopping requires the
+  // REC_STOP_HOLD_MS hold (rec_stop_hold_callback). This prevents an
+  // accidental tap mid-practice from killing the session while still giving
+  // a fast way to recover after a deliberate stop.
+  if (!s_recording) {
+    send_event(MESSAGE_KEY_START_RECORDING, 1);
   }
 }
 
 static void select_click(ClickRecognizerRef recognizer, void *context) {
   if (s_ticking) stop_ticking();
   else           start_ticking();
+}
+
+static void select_long_click(ClickRecognizerRef recognizer, void *context) {
+  // Toggle the beat-vibration mute. The metronome keeps running — only the
+  // tactile pulse is silenced (or unsilenced). Confirmation pattern uses
+  // vibes_enqueue_custom_pattern directly, bypassing the mute, so the user
+  // always feels a buzz acknowledging the toggle.
+  s_vibe_muted = !s_vibe_muted;
+  static const uint32_t segs[] = { 80, 60, 80 };
+  VibePattern pat = { .durations = segs, .num_segments = 3 };
+  vibes_enqueue_custom_pattern(pat);
+  update_bpm_label();
+  layer_mark_dirty(s_beat_dots_layer);
 }
 
 static void click_config_provider(void *context) {
@@ -253,6 +337,11 @@ static void click_config_provider(void *context) {
   window_single_repeating_click_subscribe(BUTTON_ID_UP, BPM_REPEAT_MS, up_click);
   window_single_repeating_click_subscribe(BUTTON_ID_DOWN, BPM_REPEAT_MS, down_click);
   window_single_click_subscribe(BUTTON_ID_SELECT, select_click);
+  // Long-click and single-click are mutually exclusive: presses shorter than
+  // VIBE_MUTE_HOLD_MS fire select_click on release; presses that cross the
+  // threshold fire select_long_click instead, never both.
+  window_long_click_subscribe(BUTTON_ID_SELECT, VIBE_MUTE_HOLD_MS,
+                              select_long_click, NULL);
   window_raw_click_subscribe(BUTTON_ID_UP, up_raw_down, up_raw_up, NULL);
   window_raw_click_subscribe(BUTTON_ID_DOWN, down_raw_down, down_raw_up, NULL);
 }
@@ -280,17 +369,25 @@ static void inbox_received_handler(DictionaryIterator *iter, void *context) {
   bool stats_changed = false;
   if ((t = dict_find(iter, MESSAGE_KEY_TODAY_MINUTES))) {
     s_today_minutes = (int)t->value->int32;
+    persist_write_int(PERSIST_KEY_TODAY_MINUTES, s_today_minutes);
     stats_changed = true;
   }
   if ((t = dict_find(iter, MESSAGE_KEY_WEEK_MINUTES))) {
     s_week_minutes = (int)t->value->int32;
+    persist_write_int(PERSIST_KEY_WEEK_MINUTES, s_week_minutes);
     stats_changed = true;
   }
   if ((t = dict_find(iter, MESSAGE_KEY_RECORDING_STATE))) {
     bool now = t->value->int32 != 0;
     if (now != s_recording) {
       s_recording = now;
+      // Anchor the on-watch REC timer to the moment we learned about the
+      // transition. We don't know the exact android-side start instant, but
+      // the message round-trip is short enough (~tens of ms) that the watch
+      // timer matches the audio file's wall-clock duration to within a beat.
+      s_rec_start_ts = now ? time(NULL) : 0;
       if (s_rec_indicator_layer) layer_mark_dirty(s_rec_indicator_layer);
+      update_rec_text();
     }
   }
   if (stats_changed) update_stats_text();
@@ -306,6 +403,13 @@ static void update_action_text(void) {
              s_ticking ? "SELECT to stop" : "SELECT to start");
   }
   text_layer_set_text(s_action_layer, s_action_text);
+}
+
+static void update_bpm_label(void) {
+  // The label under the BPM number doubles as the mute indicator. Keeping
+  // it in the existing layer avoids juggling another text layer for a
+  // status that the user only needs to glance at.
+  text_layer_set_text(s_bpm_label_layer, s_vibe_muted ? "BPM · silent" : "BPM");
 }
 
 static void update_stats_text(void) {
@@ -333,20 +437,17 @@ static void format_mmss(int secs, char *buf, size_t n) {
 }
 
 static void update_rec_text(void) {
-  time_t now = time(NULL);
-  int rec_secs = (int)(now - s_app_start_ts);
-  if (s_ticking) {
-    int sess_secs = s_session_accum_secs;
-    if (s_tick_start_ts > 0) sess_secs += (int)(now - s_tick_start_ts);
-    char sess[10], rec[10];
-    format_mmss(sess_secs, sess, sizeof(sess));
-    format_mmss(rec_secs, rec, sizeof(rec));
-    snprintf(s_rec_text, sizeof(s_rec_text),
-             "session %s  REC %s", sess, rec);
-  } else {
+  // The REC label tracks the *audio recording* lifecycle, not app-open time.
+  // When the android side reports recording stopped, this freezes to "REC off"
+  // so the watch UI matches the red square's state — previously the timer
+  // kept counting even after DOWN stopped the recording, which read as a bug.
+  if (s_recording && s_rec_start_ts > 0) {
+    int rec_secs = (int)(time(NULL) - s_rec_start_ts);
     char rec[10];
     format_mmss(rec_secs, rec, sizeof(rec));
     snprintf(s_rec_text, sizeof(s_rec_text), "REC %s", rec);
+  } else {
+    snprintf(s_rec_text, sizeof(s_rec_text), "REC off");
   }
   text_layer_set_text(s_rec_layer, s_rec_text);
 }
@@ -378,7 +479,7 @@ static void window_load(Window *window) {
   text_layer_set_text_color(s_bpm_label_layer, GColorLightGray);
   text_layer_set_font(s_bpm_label_layer, fonts_get_system_font(FONT_KEY_GOTHIC_18));
   text_layer_set_text_alignment(s_bpm_label_layer, GTextAlignmentCenter);
-  text_layer_set_text(s_bpm_label_layer, "BPM");
+  update_bpm_label();
   layer_add_child(s_root_layer, text_layer_get_layer(s_bpm_label_layer));
 
   // 4-dot beat indicator. Kept in roughly the same place across idle/ticking
@@ -438,6 +539,15 @@ static void init(void) {
                       : DEFAULT_BPM;
   if (s_current_bpm < MIN_BPM || s_current_bpm > MAX_BPM) {
     s_current_bpm = DEFAULT_BPM;
+  }
+  // Seed today/week from cache so the stats line renders immediately on
+  // open. Fresh values from Android arrive a beat later and overwrite both
+  // the in-memory value and the persisted one.
+  if (persist_exists(PERSIST_KEY_TODAY_MINUTES)) {
+    s_today_minutes = persist_read_int(PERSIST_KEY_TODAY_MINUTES);
+  }
+  if (persist_exists(PERSIST_KEY_WEEK_MINUTES)) {
+    s_week_minutes = persist_read_int(PERSIST_KEY_WEEK_MINUTES);
   }
 
   s_window = window_create();

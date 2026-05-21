@@ -68,6 +68,7 @@ public class MetronomeService extends Service {
     static final int KEY_RECORDING_STATE       = 10008;
     static final int KEY_MARKER                = 10009;
     static final int KEY_STOP_RECORDING        = 10010;
+    static final int KEY_START_RECORDING       = 10011;
 
     // Glance message key for the metronome chip — must match the index of
     // METRONOME_MINUTES_TODAY in the top-level package.json messageKeys list.
@@ -85,6 +86,7 @@ public class MetronomeService extends Service {
     static final String EVT_QUERY    = "query";
     static final String EVT_MARKER   = "marker";
     static final String EVT_REC_STOP = "rec_stop";
+    static final String EVT_REC_START = "rec_start";
 
     // NotificationChannel settings are immutable after creation, so to lift
     // importance from LOW → DEFAULT we have to use a new id. Bump this
@@ -165,7 +167,8 @@ public class MetronomeService extends Service {
         // recording can recover instead of dropping the rest of the
         // session on the floor.
         if (sessionStartMs == 0 && !EVT_OPENED.equals(evt) && !EVT_CLOSED.equals(evt)
-                && !EVT_MARKER.equals(evt) && !EVT_REC_STOP.equals(evt)) {
+                && !EVT_MARKER.equals(evt) && !EVT_REC_STOP.equals(evt)
+                && !EVT_REC_START.equals(evt)) {
             Log.w(TAG, "no session state; synthesizing OPEN from " + evt);
             handleOpened(value > 0 ? value : 100);
         }
@@ -178,6 +181,7 @@ public class MetronomeService extends Service {
             case EVT_QUERY:    sendTotalsToWatch();    break;
             case EVT_MARKER:   handleMarker();         break;
             case EVT_REC_STOP: handleRecStop();        break;
+            case EVT_REC_START: handleRecStart();      break;
             case EVT_CLOSED:   handleClosed();         break;
         }
         return START_NOT_STICKY;
@@ -185,17 +189,20 @@ public class MetronomeService extends Service {
 
     private void handleOpened(int initialBpm) {
         sessionStartMs = System.currentTimeMillis();
-        lastFlushMs = sessionStartMs;
         currentBpm = initialBpm;
         currentTickStartMs = 0;
+        // lastFlushMs is the *tick-run anchor*, not a session anchor —
+        // intentionally left at 0 here so idle setup time doesn't count.
+        // handleTickStart() sets it; handleTickStop()/flushTask consume it.
+        lastFlushMs = 0;
         // startForeground is already called by onStartCommand before we get
         // here, so no need to do it again.
         startRecording();
         logEvent("open", initialBpm);
-        // Practice-time accounting: ALL time the metronome watchapp is open
-        // counts toward today, not just the ticking-active stretches. The
-        // 30s periodic flush below caps loss to one interval if the process
-        // dies before a clean CLOSE.
+        // Practice-time accounting: ONLY ticking-active stretches count
+        // toward today. flushAccumulatedSeconds() is a no-op when not
+        // ticking; the 30s periodic flush below caps loss to one interval
+        // if the process dies mid-tick.
         scheduleFlush();
         sendTotalsToWatch();
     }
@@ -223,13 +230,15 @@ public class MetronomeService extends Service {
     }
 
     /**
-     * Commit whole-second deltas from the last flush boundary into today's
-     * tally and shift {@link #lastFlushMs} forward by exactly that many
-     * seconds. Working in whole seconds preserves sub-second remainders so
-     * many short flushes don't lose fractional time.
+     * Commit whole-second deltas of *ticking time* (only) since the last
+     * flush boundary into today's tally and shift {@link #lastFlushMs}
+     * forward by exactly that many seconds. Idle stretches between tick
+     * runs don't count — lastFlushMs is 0 while not ticking, which makes
+     * this method a no-op. Working in whole seconds preserves sub-second
+     * remainders so back-to-back short flushes don't lose fractional time.
      */
     private void flushAccumulatedSeconds() {
-        if (sessionStartMs == 0 || lastFlushMs == 0) return;
+        if (currentTickStartMs == 0 || lastFlushMs == 0) return;
         long now = System.currentTimeMillis();
         int secs = (int) ((now - lastFlushMs) / 1000L);
         if (secs > 0) {
@@ -257,13 +266,22 @@ public class MetronomeService extends Service {
         if (recorder == null) startRecording();
         if (bpm > 0) handleBpm(bpm);
         currentTickStartMs = System.currentTimeMillis();
+        // Anchor the flush window to *this* tick run so today/week totals
+        // only accumulate ticking time.
+        lastFlushMs = currentTickStartMs;
         logEvent("tick_start", bpm > 0 ? bpm : currentBpm);
     }
 
     private void handleTickStop() {
         if (currentTickStartMs > 0) {
+            // Commit the tail seconds since the last periodic flush before
+            // clearing the anchor — otherwise sub-30s runs would lose their
+            // whole contribution.
+            flushAccumulatedSeconds();
             currentTickStartMs = 0;
+            lastFlushMs = 0;
             logEvent("tick_stop", -1);
+            sendTotalsToWatch();
         }
     }
 
@@ -284,16 +302,27 @@ public class MetronomeService extends Service {
         // the foreground notification are tied to sessionStartMs, not the
         // recording lifecycle.
         if (recorder != null) stopRecording();
+        // Refresh the foreground notification so its "Recording" / "paused"
+        // text matches the new state. startForegroundNotif() with the same
+        // NOTIF_ID just updates the existing notification.
+        startForegroundNotif();
+    }
+
+    private void handleRecStart() {
+        // Idempotent companion to handleRecStop: a DOWN tap on the watch lands
+        // here when the user wants to re-arm recording after a deliberate stop
+        // (without having to start the metronome to do it). If a recording is
+        // already running, startRecording() short-circuits inside.
+        startRecording();
+        startForegroundNotif();
     }
 
     private void handleClosed() {
-        // Treat a close-while-ticking as a graceful tick-stop first so the
-        // sidecar gets the closing tick_stop event in order.
+        // Treat a close-while-ticking as a graceful tick-stop first — that
+        // path flushes the tail seconds for the in-progress run, so no
+        // extra flush is needed here.
         if (currentTickStartMs > 0) handleTickStop();
         logEvent("close", -1);
-        // Final flush picks up the unwritten tail since the last 30s tick.
-        // Periodic flushes have already committed everything before that.
-        flushAccumulatedSeconds();
         cancelFlush();
         // stopRecording() needs sessionStartMs to build the final filename
         // and sidecar — zero it out only after the rename is done.

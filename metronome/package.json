@@ -30,7 +30,8 @@
       "WEEK_MINUTES",
       "RECORDING_STATE",
       "MARKER",
-      "STOP_RECORDING"
+      "STOP_RECORDING",
+      "START_RECORDING"
     ],
     "resources": {
       "media": []
