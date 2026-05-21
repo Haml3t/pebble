@@ -1,0 +1,18 @@
+# Build outputs (some land as root from Docker)
+build/
+
+# The shareware WAD is freely redistributable but isn't our code — keep it
+# out of the repo. Users grab their own at install time; v1 bakes assets
+# into the resource pack at build time.
+wad/
+
+# next-hack vendor source — GPL-2 reference only. We don't actually compile
+# it; the engine here is a from-scratch raycaster (Path C). Devs who want it
+# for reference can `git clone https://github.com/next-hack/nRF52840Doom.git`
+# into vendor/doom themselves.
+vendor/
+
+# Host-compiled tool — platform-specific binary, rebuild from
+# vendor/doom/MCUDoomWadUtil/ as needed. (Not used by the Path C raycaster
+# engine — kept around as a WAD inspection helper.)
+tools/mcudoomwadutil

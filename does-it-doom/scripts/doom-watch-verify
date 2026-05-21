@@ -1,0 +1,44 @@
+#!/usr/bin/env bash
+# Outer dev loop: build → install on the real watch via adb-forwarded
+# Developer Connection → capture screenshots at fixed wall-clock times →
+# parse PERF lines from /tmp/pebble.log.
+#
+# Precondition: phone connected, `adb forward tcp:9000 tcp:9000` running,
+# Core Devices / Rebble app's Developer Connection enabled.
+#
+# Usage:
+#   ./scripts/doom-watch-verify                # phone at 127.0.0.1
+#   ./scripts/doom-watch-verify 192.168.1.40   # explicit phone IP
+set -euo pipefail
+
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+PROJECT_DIR="${REPO_ROOT}"
+PEBBLE_DOOM="${REPO_ROOT}/../scripts/pebble-doom"
+PEBBLE_LOGS_LOOP="${REPO_ROOT}/../scripts/pebble-logs-loop"
+
+PHONE="${1:-127.0.0.1}"
+STAMP="$(date +%Y%m%d-%H%M%S)"
+OUT="${PROJECT_DIR}/build/doom-watch/${STAMP}"
+mkdir -p "$OUT"
+LOG="$OUT/pebble.log"
+
+echo "[doom-watch-verify] phone=$PHONE out=$OUT"
+
+# Logs in the background — pebble-logs-loop survives BT blips.
+PEBBLE_LOG_FILE="$LOG" "$PEBBLE_LOGS_LOOP" "$PHONE" >/dev/null 2>&1 &
+LOGS_PID=$!
+trap "kill $LOGS_PID 2>/dev/null || true" EXIT
+
+"$PEBBLE_DOOM" build
+"$PEBBLE_DOOM" install --phone "$PHONE" build/project.pbw
+sleep 3
+
+for i in 0 5 10 20 30; do
+  sleep "$i"
+  "$PEBBLE_DOOM" screenshot --phone "$PHONE" --no-open "$OUT/t${i}s.png" || true
+done
+
+python3 "${PROJECT_DIR}/tools/doom-parse-perf.py" "$LOG" > "$OUT/perf.json" || true
+echo "[doom-watch-verify] perf summary:"
+python3 -c "import json; d=json.load(open('$OUT/perf.json')); print(json.dumps(d.get('summary',{}), indent=2))" 2>/dev/null || true
+echo "[doom-watch-verify] done. artifacts in $OUT"

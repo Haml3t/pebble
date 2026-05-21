@@ -1,0 +1,52 @@
+{
+  "name": "does-it-doom",
+  "author": "David Sugarman",
+  "version": "0.0.0",
+  "keywords": [
+    "pebble-app"
+  ],
+  "private": true,
+  "dependencies": {},
+  "pebble": {
+    "displayName": "Does It Doom?",
+    "uuid": "1e34a44b-b5d1-4ad8-ac7d-103609223e24",
+    "sdkVersion": "3",
+    "enableMultiJS": true,
+    "targetPlatforms": [
+      "emery"
+    ],
+    "watchapp": {
+      "watchface": false
+    },
+    "capabilities": [],
+    "messageKeys": [
+      "PERF_TICK"
+    ],
+    "resources": {
+      "media": [
+        { "type": "raw", "name": "PLAYPAL",       "file": "data/playpal.bin" },
+        { "type": "raw", "name": "TRIG_LUT",      "file": "data/trig_lut.bin" },
+        { "type": "raw", "name": "WALL_STARTAN3", "file": "data/wall_startan3.bin" },
+        { "type": "raw", "name": "TEX_NUKAGE1",   "file": "data/tex_nukage1.bin" },
+        { "type": "raw", "name": "TEX_STEP1",     "file": "data/tex_step1.bin" },
+        { "type": "raw", "name": "SPR_PISGA0",   "file": "data/spr_pisga0.bin" },
+        { "type": "raw", "name": "SPR_PISFA0",   "file": "data/spr_pisfa0.bin" },
+        { "type": "raw", "name": "SPR_POSSA1",   "file": "data/spr_possa1.bin" },
+        { "type": "raw", "name": "SPR_POSSA2A8", "file": "data/spr_possa2a8.bin" },
+        { "type": "raw", "name": "SPR_TROOA1",   "file": "data/spr_trooa1.bin" },
+        { "type": "raw", "name": "SPR_PUFFA0",   "file": "data/spr_puffa0.bin" },
+        { "type": "raw", "name": "SPR_STFST01",  "file": "data/spr_stfst01.bin" },
+        { "type": "raw", "name": "SPR_STTNUM0",  "file": "data/spr_sttnum0.bin" },
+        { "type": "raw", "name": "SPR_STTNUM1",  "file": "data/spr_sttnum1.bin" },
+        { "type": "raw", "name": "SPR_STTNUM2",  "file": "data/spr_sttnum2.bin" },
+        { "type": "raw", "name": "SPR_STTNUM3",  "file": "data/spr_sttnum3.bin" },
+        { "type": "raw", "name": "SPR_STTNUM4",  "file": "data/spr_sttnum4.bin" },
+        { "type": "raw", "name": "SPR_STTNUM5",  "file": "data/spr_sttnum5.bin" },
+        { "type": "raw", "name": "SPR_STTNUM6",  "file": "data/spr_sttnum6.bin" },
+        { "type": "raw", "name": "SPR_STTNUM7",  "file": "data/spr_sttnum7.bin" },
+        { "type": "raw", "name": "SPR_STTNUM8",  "file": "data/spr_sttnum8.bin" },
+        { "type": "raw", "name": "SPR_STTNUM9",  "file": "data/spr_sttnum9.bin" }
+      ]
+    }
+  }
+}

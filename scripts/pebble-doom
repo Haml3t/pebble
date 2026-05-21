@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+# Project-scoped wrapper around the Rebble pebble-sdk Docker image. Mirrors
+# scripts/pebble-metronome but bind-mounts does-it-doom/ instead of the
+# repo root (which is the Glance watchface).
+#
+# Usage:
+#   ./scripts/pebble-doom build
+#   ./scripts/pebble-doom install --phone <ip>
+#   ./scripts/pebble-doom logs --phone <ip>
+set -euo pipefail
+
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+PROJECT_DIR="${REPO_ROOT}/does-it-doom"
+IMAGE="${PEBBLE_SDK_IMAGE:-rebble/pebble-sdk:latest}"
+
+if [ -t 0 ] && [ -t 1 ]; then
+  TTY_FLAGS=(-it)
+else
+  TTY_FLAGS=(-i)
+fi
+
+exec docker run --rm "${TTY_FLAGS[@]}" \
+  -v "${PROJECT_DIR}:/home/pebble/project" \
+  -w /home/pebble/project \
+  --network host \
+  "${IMAGE}" \
+  pebble "$@"

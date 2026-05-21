@@ -1,0 +1,75 @@
+#!/usr/bin/env bash
+# Inner dev loop: build → install in emery emulator → drive scripted input →
+# capture screenshots at fixed beats → parse PERF logs.
+#
+# One pebble-emu-chain container shared across all commands (~30s total).
+# Use this for ~70% of changes — only fall back to doom-watch-verify for
+# HR/sensor-specific behavior and final-acceptance frames.
+#
+# Outputs:
+#   build/doom-emu/<stamp>/t<N>s.png           screenshots at fixed times
+#   build/doom-emu/<stamp>/pebble.log          captured app logs
+#   build/doom-emu/<stamp>/perf.json           parsed PERF lines
+#   build/doom-emu/<stamp>/diff.json           per-screenshot delta vs goldens
+#
+# Usage:
+#   ./scripts/doom-emu-loop                              # default 30s run
+#   ./scripts/doom-emu-loop tests/inputs/title.txt       # scripted run
+set -euo pipefail
+
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+PROJECT_DIR="${REPO_ROOT}"   # this script lives inside the project
+PEBBLE_DOOM_EMU_CHAIN="${REPO_ROOT}/../scripts/pebble-doom-emu-chain"
+
+INPUT_SCRIPT="${1:-}"
+STAMP="$(date +%Y%m%d-%H%M%S)"
+OUT_DIR_REL="build/doom-emu/${STAMP}"
+OUT_DIR="${PROJECT_DIR}/${OUT_DIR_REL}"
+mkdir -p "$OUT_DIR"
+
+echo "[doom-emu-loop] out: $OUT_DIR_REL"
+
+# Sequence inside the container: build → install → run for N seconds while
+# capturing screenshots at fixed beats, then kill.
+# Logs are captured by piping stderr of `pebble logs` through tee — there is
+# no `pebble logs --emulator` blocking-foreground mode, so we background it.
+read -r -d '' CHAIN_CMD <<'SH' || true
+set -euo pipefail
+mkdir -p "$OUT"
+pebble build 2>&1 | tee "$OUT/build.log"
+pebble install build/project.pbw 2>&1 | tee "$OUT/install.log"
+# Background log capture — pebble logs without --phone reads from the emu.
+( pebble logs 2>&1 | tee "$OUT/pebble.log" ) &
+LOGS_PID=$!
+sleep 2
+pebble screenshot --no-open "$OUT/t02s.png"  2>&1 | tee -a "$OUT/build.log"
+sleep 3
+pebble screenshot --no-open "$OUT/t05s.png"  2>&1 | tee -a "$OUT/build.log"
+sleep 5
+pebble screenshot --no-open "$OUT/t10s.png"  2>&1 | tee -a "$OUT/build.log"
+sleep 10
+pebble screenshot --no-open "$OUT/t20s.png"  2>&1 | tee -a "$OUT/build.log"
+kill $LOGS_PID 2>/dev/null || true
+pebble kill || true
+SH
+
+"$PEBBLE_DOOM_EMU_CHAIN" "OUT='$OUT_DIR_REL' bash -c $(printf %q "$CHAIN_CMD")"
+
+# Post-process logs from the host side.
+if [ -f "$OUT_DIR/pebble.log" ]; then
+  python3 "${PROJECT_DIR}/tools/doom-parse-perf.py" \
+    "$OUT_DIR/pebble.log" > "$OUT_DIR/perf.json" || true
+  echo "[doom-emu-loop] perf summary:"
+  python3 -c "import json,sys; d=json.load(open('$OUT_DIR/perf.json')); print(json.dumps(d.get('summary',{}), indent=2))" 2>/dev/null || true
+fi
+
+# Screenshot diffs against goldens, if any goldens exist.
+if [ -d "$PROJECT_DIR/tests/goldens" ] && [ "$(ls -A "$PROJECT_DIR/tests/goldens" 2>/dev/null)" ]; then
+  python3 "${PROJECT_DIR}/tools/doom-diff.py" \
+    --frames "$OUT_DIR" \
+    --goldens "${PROJECT_DIR}/tests/goldens" \
+    --report "$OUT_DIR/diff.json" || true
+fi
+
+echo "[doom-emu-loop] done. artifacts in ${OUT_DIR_REL}"
+ls -la "$OUT_DIR"
