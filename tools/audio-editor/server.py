@@ -70,6 +70,41 @@ def _save_meta(meta):
     META_PATH.write_text(json.dumps(meta, indent=2))
 
 
+def _markers_path(audio_name):
+    """`foo.m4a` → `foo.markers.json` next to the audio file. Keeps the
+    existing sidecar (`foo.json`, written by the Android service) free of
+    user edits so we never corrupt the watch-recorded event log."""
+    base = LOCAL_DIR / audio_name
+    return base.with_name(base.stem + ".markers.json")
+
+
+def _read_editor_markers(audio_name):
+    p = _markers_path(audio_name)
+    if not p.exists():
+        return []
+    try:
+        return json.loads(p.read_text()).get("markers", [])
+    except Exception:
+        return []
+
+
+def _read_watch_markers(audio_name):
+    """Extract `type=marker` events from the m4a's sidecar JSON written by
+    MetronomeService when the user presses UP during recording. These
+    seed the editor with markers the user hasn't annotated yet."""
+    if not audio_name.endswith(".m4a"):
+        return []
+    sidecar = (LOCAL_DIR / audio_name).with_suffix(".json")
+    if not sidecar.exists():
+        return []
+    try:
+        s = json.loads(sidecar.read_text())
+    except Exception:
+        return []
+    return [{"t_ms": int(e.get("t_ms", 0)), "note": "", "source": "watch"}
+            for e in s.get("events", []) if e.get("type") == "marker"]
+
+
 class Handler(http.server.SimpleHTTPRequestHandler):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, directory=str(HERE), **kwargs)
@@ -77,6 +112,9 @@ class Handler(http.server.SimpleHTTPRequestHandler):
     def do_GET(self):
         if self.path == "/api/files":
             return self._send_file_list()
+        if self.path.startswith("/api/markers"):
+            from urllib.parse import urlparse, parse_qs
+            return self._get_markers(parse_qs(urlparse(self.path).query))
         return super().do_GET()
 
     def do_POST(self):
@@ -91,6 +129,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return self._delete_recording(parse_qs(parsed.query))
         if parsed.path == "/api/star":
             return self._set_star(parse_qs(parsed.query))
+        if parsed.path == "/api/markers":
+            return self._save_markers(parse_qs(parsed.query))
         if parsed.path != "/api/save-clip":
             self.send_error(404)
             return
@@ -149,6 +189,60 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         meta["starred"] = [s for s in meta.get("starred", []) if s not in removed]
         _save_meta(meta)
         body = json.dumps({"removed": removed}).encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _get_markers(self, qs):
+        name = (qs.get("audio") or [""])[0]
+        if not name or "/" in name or ".." in name:
+            self.send_error(400, "bad name")
+            return
+        editor = _read_editor_markers(name)
+        # Dedupe by t_ms: an editor-saved marker (with note) takes
+        # precedence over the watch-side stub from the sidecar event log.
+        seen = {m.get("t_ms") for m in editor}
+        merged = list(editor)
+        for wm in _read_watch_markers(name):
+            if wm["t_ms"] not in seen:
+                merged.append(wm)
+        merged.sort(key=lambda m: m.get("t_ms", 0))
+        body = json.dumps({"markers": merged}).encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _save_markers(self, qs):
+        name = (qs.get("audio") or [""])[0]
+        if not name or "/" in name or ".." in name:
+            self.send_error(400, "bad name")
+            return
+        n = int(self.headers.get("Content-Length", "0"))
+        try:
+            data = json.loads(self.rfile.read(n))
+        except Exception:
+            self.send_error(400, "bad json")
+            return
+        clean = []
+        for m in data.get("markers", []):
+            try:
+                t = int(m.get("t_ms", 0))
+            except Exception:
+                continue
+            # Cap note length so a runaway client can't fill the disk.
+            note = str(m.get("note", ""))[:500]
+            clean.append({"t_ms": t, "note": note})
+        clean.sort(key=lambda m: m["t_ms"])
+        p = _markers_path(name)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        # Write empty array as `[]` rather than deleting — explicit
+        # "no markers" is distinct from "never opened in editor".
+        p.write_text(json.dumps({"markers": clean}, indent=2))
+        body = json.dumps({"count": len(clean)}).encode("utf-8")
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(body)))

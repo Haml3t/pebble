@@ -25,6 +25,7 @@ const rulerCanvas   = $("#ruler");
 const waveOverlay   = $("#waveform-overlay");
 const deleteBtn     = $("#delete-recording");
 const exportBtn     = $("#export-file");
+const addMarkerBtn  = $("#add-marker");
 
 // ---- State --------------------------------------------------------------
 let audioCtx = null;             // lazy-init on first user gesture
@@ -38,6 +39,7 @@ let playStartOffset = 0;         // seconds within audioBuffer at last play()
 let isPlaying = false;
 let selection = null;            // {start, end} in seconds, or null
 let raf = null;                  // requestAnimationFrame handle for playhead
+let markers = [];                // [{t_ms, note, source?}] for current file
 
 // ---- Utilities ----------------------------------------------------------
 function fmtTime(s) {
@@ -270,6 +272,17 @@ async function loadRecording(item) {
     }
   }
 
+  // Markers — server merges editor-saved markers with watch UP-press
+  // markers from the sidecar event log so both kinds show up here.
+  markers = [];
+  try {
+    const data = await fetch("/api/markers?audio=" + encodeURIComponent(item.name))
+                       .then(r => r.json());
+    markers = (data && data.markers) || [];
+  } catch (e) {
+    console.warn("markers load failed:", e);
+  }
+
   durationEl.textContent = fmtTime(durationSec);
   setStatus(`${audioBuffer.sampleRate.toLocaleString()} Hz · ${audioBuffer.numberOfChannels} ch`);
   playBtn.disabled = false;
@@ -277,6 +290,7 @@ async function loadRecording(item) {
   shareBtn.disabled = !!(currentFile && (currentFile.isClip || currentFile.name.endsWith(".wav")));
   deleteBtn.disabled = false;
   exportBtn.disabled = false;
+  addMarkerBtn.disabled = false;
 
   resizeCanvases();
   redrawAll();
@@ -473,8 +487,32 @@ function drawOverlay(overlayEl, color) {
   }
 }
 
+function drawMarkers(overlayEl) {
+  if (!markers || markers.length === 0 || durationSec <= 0) return;
+  for (let i = 0; i < markers.length; i++) {
+    const m = markers[i];
+    const sec = m.t_ms / 1000;
+    if (sec < 0 || sec > durationSec) continue;
+    const x = secToPx(sec);
+    const wrap = document.createElement("div");
+    wrap.className = "marker" + (m.source === "watch" && !m.note ? " unannotated" : "");
+    wrap.style.left = x + "px";
+    wrap.title = `${fmtTime(sec)}${m.note ? " — " + m.note : " (no note)"}`;
+    const flag = document.createElement("div");
+    flag.className = "marker-flag";
+    flag.textContent = String(i + 1);
+    wrap.appendChild(flag);
+    wrap.addEventListener("click", (e) => {
+      e.stopPropagation();
+      editMarker(i);
+    });
+    overlayEl.appendChild(wrap);
+  }
+}
+
 function redrawOverlays() {
   drawOverlay(waveOverlay, "#fff");
+  drawMarkers(waveOverlay);
 }
 
 function redrawAll() {
@@ -680,6 +718,53 @@ function writeStr(view, off, str) {
   for (let i = 0; i < str.length; i++) view.setUint8(off + i, str.charCodeAt(i));
 }
 
+// ---- Markers ------------------------------------------------------------
+async function persistMarkers() {
+  if (!currentFile) return;
+  try {
+    const res = await fetch("/api/markers?audio=" +
+                            encodeURIComponent(currentFile.name), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ markers }),
+    });
+    if (!res.ok) throw new Error("server " + res.status);
+  } catch (e) {
+    setStatus("marker save failed: " + e.message);
+  }
+}
+
+async function addMarkerAtPlayhead() {
+  if (!audioBuffer || !currentFile) return;
+  const t = currentPlayheadSec() || 0;
+  const note = prompt(`Marker at ${fmtTime(t)}\nNote (blank ok):`, "");
+  if (note === null) return;
+  markers.push({ t_ms: Math.round(t * 1000), note: note.trim() });
+  markers.sort((a, b) => a.t_ms - b.t_ms);
+  await persistMarkers();
+  redrawOverlays();
+  setStatus("marker @ " + fmtTime(t));
+}
+
+async function editMarker(idx) {
+  const m = markers[idx];
+  if (!m) return;
+  const t = m.t_ms / 1000;
+  const result = prompt(
+      `Marker ${idx + 1} at ${fmtTime(t)}\nEdit note (or type "delete" to remove):`,
+      m.note || "");
+  if (result === null) return;
+  if (result.trim().toLowerCase() === "delete") {
+    markers.splice(idx, 1);
+    setStatus("marker " + (idx + 1) + " removed");
+  } else {
+    m.note = result.trim();
+    setStatus("marker " + (idx + 1) + " saved");
+  }
+  await persistMarkers();
+  redrawOverlays();
+}
+
 async function saveSelection() {
   if (!selection || !audioBuffer || !currentFile) return;
   const a = Math.min(selection.start, selection.end);
@@ -744,6 +829,16 @@ deleteBtn.addEventListener("click", deleteRecording);
 exportBtn.addEventListener("click", () => {
   if (currentFile) triggerExport(currentFile.name);
 });
+addMarkerBtn.addEventListener("click", addMarkerAtPlayhead);
+// Keyboard: 'm' drops a marker at the playhead, mirroring the watch's UP
+// button. Skip when typing in a prompt-style input.
+window.addEventListener("keydown", (e) => {
+  if (e.key !== "m" && e.key !== "M") return;
+  if (e.target && e.target.matches && e.target.matches("input, textarea")) return;
+  if (!audioBuffer) return;
+  e.preventDefault();
+  addMarkerAtPlayhead();
+});
 refreshBtn.addEventListener("click", refreshFileList);
 backBtn.addEventListener("click", () => {
   stopPlayback();
@@ -773,8 +868,9 @@ async function deleteRecording() {
     durationSec = 0;
     selection = null;
     // Disable buttons and reset the editor pane.
-    [playBtn, playSelBtn, clearSelBtn, saveBtn, shareBtn, deleteBtn, exportBtn]
-        .forEach(b => b.disabled = true);
+    [playBtn, playSelBtn, clearSelBtn, saveBtn, shareBtn, deleteBtn, exportBtn,
+     addMarkerBtn].forEach(b => b.disabled = true);
+    markers = [];
     filenameEl.textContent = "No recording loaded";
     durationEl.textContent = "";
     bpmAxisEl.textContent = "";
