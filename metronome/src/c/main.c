@@ -54,7 +54,6 @@ static Layer *s_root_layer;
 static TextLayer *s_bpm_layer;
 static TextLayer *s_bpm_label_layer;
 static TextLayer *s_action_layer;
-static TextLayer *s_help_hint_layer;
 static TextLayer *s_stats_layer;
 static TextLayer *s_rec_layer;
 static Layer     *s_beat_dots_layer;
@@ -666,21 +665,6 @@ static void window_load(Window *window) {
   text_layer_set_text_alignment(s_action_layer, GTextAlignmentCenter);
   layer_add_child(s_root_layer, text_layer_get_layer(s_action_layer));
 
-  // Discoverability hint for the help screen — small + dim so it doesn't
-  // compete with the action prompt above it, but always present so users
-  // who don't read this comment can still find their way to the guide.
-  // TODO: remove this on-screen hint once the app is published — the
-  // gesture will live in the Pebble Android app / app-store listing
-  // description instead, keeping the watch UI uncluttered for regular use.
-  s_help_hint_layer = text_layer_create(GRect(0, 160, b.size.w, 18));
-  text_layer_set_background_color(s_help_hint_layer, GColorClear);
-  text_layer_set_text_color(s_help_hint_layer, GColorDarkGray);
-  text_layer_set_font(s_help_hint_layer,
-                      fonts_get_system_font(FONT_KEY_GOTHIC_14));
-  text_layer_set_text_alignment(s_help_hint_layer, GTextAlignmentCenter);
-  text_layer_set_text(s_help_hint_layer, "UP+SELECT hold · help");
-  layer_add_child(s_root_layer, text_layer_get_layer(s_help_hint_layer));
-
   s_stats_layer = text_layer_create(GRect(0, 178, b.size.w, 18));
   text_layer_set_background_color(s_stats_layer, GColorClear);
   text_layer_set_text_color(s_stats_layer, GColorLightGray);
@@ -712,7 +696,6 @@ static void window_unload(Window *window) {
   text_layer_destroy(s_bpm_layer);
   text_layer_destroy(s_bpm_label_layer);
   text_layer_destroy(s_action_layer);
-  text_layer_destroy(s_help_hint_layer);
   text_layer_destroy(s_stats_layer);
   text_layer_destroy(s_rec_layer);
   layer_destroy(s_beat_dots_layer);
