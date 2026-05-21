@@ -35,6 +35,12 @@
 // hold gates for muscle-memory consistency.
 #define VIBE_MUTE_HOLD_MS 2000
 
+// BACK long-click threshold. Shorter than the other hold gates — a 2s hold
+// felt like "did I miss it?" in testing because BACK has no visual/tactile
+// in-progress cue. 1s is unmistakably longer than a quick exit-tap but fast
+// enough to fire while the user is still committing to the gesture.
+#define HELP_HOLD_MS 1000
+
 #define PERSIST_KEY_LAST_BPM       1
 // Last-known today/week minutes — cached so the watch shows the previous
 // totals instantly on app open, instead of "today -- week --" until the
@@ -48,10 +54,17 @@ static Layer *s_root_layer;
 static TextLayer *s_bpm_layer;
 static TextLayer *s_bpm_label_layer;
 static TextLayer *s_action_layer;
+static TextLayer *s_help_hint_layer;
 static TextLayer *s_stats_layer;
 static TextLayer *s_rec_layer;
 static Layer     *s_beat_dots_layer;
 static Layer     *s_rec_indicator_layer;
+
+// Help screen — separate window, lazy-initialized when the user first
+// holds BACK. Stays around between opens so we don't churn allocation.
+static Window     *s_help_window = NULL;
+static ScrollLayer *s_help_scroll_layer = NULL;
+static TextLayer  *s_help_text_layer = NULL;
 
 static char s_bpm_text[8];
 static char s_action_text[24];
@@ -70,10 +83,14 @@ static int  s_beat_index = 0;       // 0..3, cycles for the dot indicator
 // schedule an AppTimer that only fires if both stay held for MODE_HOLD_MS.
 // DOWN-alone hold (perf mode) drives a separate timer that stops recording
 // after REC_STOP_HOLD_MS — mutually exclusive with the mode-toggle timer.
+// UP+SELECT held together opens the help screen via a third timer.
 static bool s_up_pressed = false;
 static bool s_down_pressed = false;
+static bool s_select_pressed = false;
 static AppTimer *s_hold_timer = NULL;
 static AppTimer *s_rec_stop_hold_timer = NULL;
+static AppTimer *s_help_gesture_timer = NULL;
+static bool s_help_gesture_fired = false;
 
 static time_t s_app_start_ts;       // when the metronome app launched
 static time_t s_tick_start_ts;      // when the current tick run began
@@ -91,6 +108,7 @@ static void update_rec_text(void);
 static void update_action_text(void);
 static void update_bpm_text(void);
 static void update_bpm_label(void);
+static void show_help(void);
 
 // === Drawing =============================================================
 
@@ -217,6 +235,13 @@ static void cancel_rec_stop_hold_timer(void) {
   }
 }
 
+static void cancel_help_gesture_timer(void) {
+  if (s_help_gesture_timer) {
+    app_timer_cancel(s_help_gesture_timer);
+    s_help_gesture_timer = NULL;
+  }
+}
+
 static void mode_toggle_callback(void *ctx) {
   s_hold_timer = NULL;
   s_edit_mode = !s_edit_mode;
@@ -240,13 +265,28 @@ static void rec_stop_hold_callback(void *ctx) {
   send_event(MESSAGE_KEY_STOP_RECORDING, 1);
 }
 
+static void help_gesture_callback(void *ctx) {
+  s_help_gesture_timer = NULL;
+  s_help_gesture_fired = true;
+  show_help();
+}
+
 // Decide which hold timer (if any) should be running based on current button
-// state. Both-held mode-toggle always wins over DOWN-alone rec-stop, so the
-// user can still gesture into edit mode without their in-progress DOWN press
-// stopping recording.
+// state. Multi-button gestures are mutually exclusive: UP+SELECT (help) and
+// UP+DOWN (mode toggle) both win over single-button holds, so a multi-press
+// during recording doesn't accidentally fire STOP_RECORDING via the
+// DOWN-alone path.
 static void update_hold_timers(void) {
-  if (s_up_pressed && s_down_pressed) {
+  if (s_up_pressed && s_select_pressed) {
+    cancel_hold_timer();
     cancel_rec_stop_hold_timer();
+    if (!s_help_gesture_timer && !s_help_gesture_fired) {
+      s_help_gesture_timer = app_timer_register(
+          HELP_HOLD_MS, help_gesture_callback, NULL);
+    }
+  } else if (s_up_pressed && s_down_pressed) {
+    cancel_rec_stop_hold_timer();
+    cancel_help_gesture_timer();
     if (!s_hold_timer) {
       s_hold_timer = app_timer_register(MODE_HOLD_MS, mode_toggle_callback, NULL);
     }
@@ -255,6 +295,7 @@ static void update_hold_timers(void) {
     // guard, holding DOWN from a stopped state would fire START_RECORDING via
     // down_click (instant) and then STOP_RECORDING via the timer 2s later.
     cancel_hold_timer();
+    cancel_help_gesture_timer();
     if (!s_rec_stop_hold_timer) {
       s_rec_stop_hold_timer = app_timer_register(
           REC_STOP_HOLD_MS, rec_stop_hold_callback, NULL);
@@ -262,10 +303,15 @@ static void update_hold_timers(void) {
   } else {
     cancel_hold_timer();
     cancel_rec_stop_hold_timer();
+    cancel_help_gesture_timer();
   }
 }
 
 static void up_raw_down(ClickRecognizerRef r, void *ctx) {
+  // A fresh UP press without SELECT held means the user is starting a
+  // new interaction, not continuing the previous help gesture. Drop the
+  // latch so select_click won't keep suppressing start/stop ticking.
+  if (!s_select_pressed) s_help_gesture_fired = false;
   s_up_pressed = true;
   update_hold_timers();
 }
@@ -281,13 +327,25 @@ static void down_raw_up(ClickRecognizerRef r, void *ctx) {
   s_down_pressed = false;
   update_hold_timers();
 }
+static void select_raw_down(ClickRecognizerRef r, void *ctx) {
+  // Same latch-reset rule as up_raw_down — see comment there.
+  if (!s_up_pressed) s_help_gesture_fired = false;
+  s_select_pressed = true;
+  update_hold_timers();
+}
+static void select_raw_up(ClickRecognizerRef r, void *ctx) {
+  s_select_pressed = false;
+  update_hold_timers();
+}
 
 static void up_click(ClickRecognizerRef recognizer, void *context) {
   // While both are held we're mid-gesture toward a mode toggle — suppress
   // the per-button action. The first button's initial click can still slip
   // through if the user presses non-simultaneously; that's a tolerable
-  // edge case (one stray ±1 BPM or one stray marker).
+  // edge case (one stray ±1 BPM or one stray marker). Same for UP+SELECT
+  // (help gesture) — suppress markers while SELECT is also down.
   if (both_held()) return;
+  if (s_select_pressed) return;
   if (s_edit_mode) {
     set_bpm(s_current_bpm + 1, true);
   } else {
@@ -312,6 +370,10 @@ static void down_click(ClickRecognizerRef recognizer, void *context) {
 }
 
 static void select_click(ClickRecognizerRef recognizer, void *context) {
+  // Suppress start/stop tick when this release ended a UP+SELECT help
+  // gesture (or is mid-gesture with UP still held). Without this, opening
+  // the help screen would also start/stop the metronome.
+  if (s_up_pressed || s_help_gesture_fired) return;
   if (s_ticking) stop_ticking();
   else           start_ticking();
 }
@@ -329,6 +391,108 @@ static void select_long_click(ClickRecognizerRef recognizer, void *context) {
   layer_mark_dirty(s_beat_dots_layer);
 }
 
+// === Help screen =========================================================
+
+// Single source of truth for the button reference. Kept terse — every line
+// has to read fast at arm's length on a 200px screen.
+static const char *HELP_TEXT =
+    "Buttons\n"
+    "\n"
+    "SELECT\n"
+    " tap: start/stop\n"
+    " hold 2s: mute beat\n"
+    "\n"
+    "UP\n"
+    " tap: mark spot\n"
+    " edit: +1 BPM\n"
+    "\n"
+    "DOWN\n"
+    " tap: start rec\n"
+    " hold 2s: stop rec\n"
+    " edit: -1 BPM\n"
+    "\n"
+    "UP + DOWN\n"
+    " hold 2s: edit mode\n"
+    "\n"
+    "UP + SELECT\n"
+    " hold: this help\n"
+    "\n"
+    "BACK\n"
+    " tap: exit app";
+
+static void help_window_load(Window *window) {
+  Layer *root = window_get_root_layer(window);
+  GRect b = layer_get_bounds(root);
+
+  s_help_scroll_layer = scroll_layer_create(b);
+  // Measure how tall the text actually wants to be so ScrollLayer knows
+  // how far to allow scrolling. graphics_text_layout_get_content_size is
+  // a layout-only call — no drawing — so it's safe to invoke at load time.
+  GFont font = fonts_get_system_font(FONT_KEY_GOTHIC_18);
+  GSize text_size = graphics_text_layout_get_content_size(
+      HELP_TEXT, font,
+      GRect(0, 0, b.size.w - 8, 2000),
+      GTextOverflowModeWordWrap, GTextAlignmentLeft);
+
+  s_help_text_layer = text_layer_create(
+      GRect(4, 0, b.size.w - 8, text_size.h + 8));
+  text_layer_set_text(s_help_text_layer, HELP_TEXT);
+  text_layer_set_font(s_help_text_layer, font);
+  text_layer_set_background_color(s_help_text_layer, GColorBlack);
+  text_layer_set_text_color(s_help_text_layer, GColorWhite);
+  text_layer_set_text_alignment(s_help_text_layer, GTextAlignmentLeft);
+
+  scroll_layer_add_child(s_help_scroll_layer,
+                         text_layer_get_layer(s_help_text_layer));
+  scroll_layer_set_content_size(s_help_scroll_layer,
+                                GSize(b.size.w, text_size.h + 8));
+  // UP/DOWN scroll, SELECT/BACK fall through to default (pops the window).
+  scroll_layer_set_click_config_onto_window(s_help_scroll_layer, window);
+
+  layer_add_child(root, scroll_layer_get_layer(s_help_scroll_layer));
+}
+
+static void help_window_unload(Window *window) {
+  text_layer_destroy(s_help_text_layer);
+  scroll_layer_destroy(s_help_scroll_layer);
+  s_help_text_layer = NULL;
+  s_help_scroll_layer = NULL;
+}
+
+static void help_window_disappear(Window *window) {
+  // Returning to main. Reset ALL press-state tracking, not just the
+  // help-gesture latch: the user released UP/SELECT while help was on
+  // top, so the main window's raw_up handlers never fired. Without this
+  // reset, s_up_pressed / s_select_pressed stay stuck true and the next
+  // select_click on main thinks the gesture is still in progress.
+  s_help_gesture_fired = false;
+  s_up_pressed = false;
+  s_down_pressed = false;
+  s_select_pressed = false;
+  cancel_hold_timer();
+  cancel_rec_stop_hold_timer();
+  cancel_help_gesture_timer();
+}
+
+static void show_help(void) {
+  if (!s_help_window) {
+    s_help_window = window_create();
+    window_set_background_color(s_help_window, GColorBlack);
+    window_set_window_handlers(s_help_window, (WindowHandlers){
+                                                  .load = help_window_load,
+                                                  .unload = help_window_unload,
+                                                  .disappear = help_window_disappear,
+                                              });
+  }
+  window_stack_push(s_help_window, true);
+}
+
+// Help-screen gesture: UP+SELECT held together for HELP_HOLD_MS. BACK
+// was tried first but the Pebble OS has its own long-BACK exit fail-safe
+// that overrides app subscriptions, and raw-click alone on BACK doesn't
+// reliably suppress the default exit. UP+SELECT is otherwise unused so
+// it's a safe gesture to claim.
+
 static void click_config_provider(void *context) {
   // single_repeating fires on press + every BPM_REPEAT_MS while held —
   // gives autorepeat for ±BPM in edit mode and "hold to mark many" in perf
@@ -342,8 +506,15 @@ static void click_config_provider(void *context) {
   // threshold fire select_long_click instead, never both.
   window_long_click_subscribe(BUTTON_ID_SELECT, VIBE_MUTE_HOLD_MS,
                               select_long_click, NULL);
+  // BACK uses Pebble's default exit-on-press behavior — no subscription
+  // here. We tried raw_click on BACK to make a hold-to-help gesture, but
+  // the OS has a hard-exit failsafe that pre-empts app-level long-press
+  // detection. Help is reached via UP+SELECT held instead (see
+  // help_gesture_callback + update_hold_timers).
   window_raw_click_subscribe(BUTTON_ID_UP, up_raw_down, up_raw_up, NULL);
   window_raw_click_subscribe(BUTTON_ID_DOWN, down_raw_down, down_raw_up, NULL);
+  window_raw_click_subscribe(BUTTON_ID_SELECT,
+                             select_raw_down, select_raw_up, NULL);
 }
 
 // === AppMessage ==========================================================
@@ -495,6 +666,18 @@ static void window_load(Window *window) {
   text_layer_set_text_alignment(s_action_layer, GTextAlignmentCenter);
   layer_add_child(s_root_layer, text_layer_get_layer(s_action_layer));
 
+  // Discoverability hint for the help screen — small + dim so it doesn't
+  // compete with the action prompt above it, but always present so users
+  // who don't read this comment can still find their way to the guide.
+  s_help_hint_layer = text_layer_create(GRect(0, 160, b.size.w, 18));
+  text_layer_set_background_color(s_help_hint_layer, GColorClear);
+  text_layer_set_text_color(s_help_hint_layer, GColorDarkGray);
+  text_layer_set_font(s_help_hint_layer,
+                      fonts_get_system_font(FONT_KEY_GOTHIC_14));
+  text_layer_set_text_alignment(s_help_hint_layer, GTextAlignmentCenter);
+  text_layer_set_text(s_help_hint_layer, "UP+SELECT hold · help");
+  layer_add_child(s_root_layer, text_layer_get_layer(s_help_hint_layer));
+
   s_stats_layer = text_layer_create(GRect(0, 178, b.size.w, 18));
   text_layer_set_background_color(s_stats_layer, GColorClear);
   text_layer_set_text_color(s_stats_layer, GColorLightGray);
@@ -526,6 +709,7 @@ static void window_unload(Window *window) {
   text_layer_destroy(s_bpm_layer);
   text_layer_destroy(s_bpm_label_layer);
   text_layer_destroy(s_action_layer);
+  text_layer_destroy(s_help_hint_layer);
   text_layer_destroy(s_stats_layer);
   text_layer_destroy(s_rec_layer);
   layer_destroy(s_beat_dots_layer);
@@ -576,6 +760,7 @@ static void deinit(void) {
   send_event(MESSAGE_KEY_METRONOME_CLOSED, 0);
 
   tick_timer_service_unsubscribe();
+  if (s_help_window) window_destroy(s_help_window);
   window_destroy(s_window);
 }
 
