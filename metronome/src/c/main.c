@@ -41,6 +41,11 @@
 // enough to fire while the user is still committing to the gesture.
 #define HELP_HOLD_MS 1000
 
+// How long the full-screen "Marked m:ss" flash stays up after a successful
+// UP-press marker. Long enough to read at arm's length without obscuring
+// the metronome for so long it disrupts practice.
+#define MARKER_FLASH_MS 700
+
 #define PERSIST_KEY_LAST_BPM       1
 // Last-known today/week minutes — cached so the watch shows the previous
 // totals instantly on app open, instead of "today -- week --" until the
@@ -58,6 +63,11 @@ static TextLayer *s_stats_layer;
 static TextLayer *s_rec_layer;
 static Layer     *s_beat_dots_layer;
 static Layer     *s_rec_indicator_layer;
+// Full-screen "Marked m:ss" overlay shown briefly when UP fires a marker.
+// Sits above all other layers; hidden by default, shown by show_marker_flash().
+static Layer     *s_marker_flash_layer;
+static char       s_marker_flash_text[16];
+static AppTimer  *s_marker_flash_timer = NULL;
 
 // Help screen — separate window, lazy-initialized when the user first
 // holds BACK. Stays around between opens so we don't churn allocation.
@@ -116,6 +126,38 @@ static void rec_indicator_update_proc(Layer *layer, GContext *ctx) {
   GRect b = layer_get_bounds(layer);
   graphics_context_set_fill_color(ctx, GColorRed);
   graphics_fill_rect(ctx, b, 0, GCornerNone);
+}
+
+static void marker_flash_update_proc(Layer *layer, GContext *ctx) {
+  GRect b = layer_get_bounds(layer);
+  graphics_context_set_fill_color(ctx, GColorYellow);
+  graphics_fill_rect(ctx, b, 0, GCornerNone);
+  graphics_context_set_text_color(ctx, GColorBlack);
+  GFont font = fonts_get_system_font(FONT_KEY_GOTHIC_28_BOLD);
+  // Center the text vertically with a small bias upward so the text feels
+  // optically centered (descenders + line-height push perceived center down).
+  GRect text_rect = GRect(0, (b.size.h - 34) / 2 - 4, b.size.w, 40);
+  graphics_draw_text(ctx, s_marker_flash_text, font, text_rect,
+                     GTextOverflowModeFill, GTextAlignmentCenter, NULL);
+}
+
+static void marker_flash_hide(void *ctx) {
+  s_marker_flash_timer = NULL;
+  if (s_marker_flash_layer) layer_set_hidden(s_marker_flash_layer, true);
+}
+
+static void show_marker_flash(void) {
+  int rec_secs = 0;
+  if (s_recording && s_rec_start_ts > 0) {
+    rec_secs = (int)(time(NULL) - s_rec_start_ts);
+  }
+  snprintf(s_marker_flash_text, sizeof(s_marker_flash_text),
+           "Marked %d:%02d", rec_secs / 60, rec_secs % 60);
+  layer_set_hidden(s_marker_flash_layer, false);
+  layer_mark_dirty(s_marker_flash_layer);
+  if (s_marker_flash_timer) app_timer_cancel(s_marker_flash_timer);
+  s_marker_flash_timer = app_timer_register(MARKER_FLASH_MS,
+                                            marker_flash_hide, NULL);
 }
 
 static void beat_dots_update_proc(Layer *layer, GContext *ctx) {
@@ -347,8 +389,14 @@ static void up_click(ClickRecognizerRef recognizer, void *context) {
   if (s_select_pressed) return;
   if (s_edit_mode) {
     set_bpm(s_current_bpm + 1, true);
-  } else {
+    return;
+  }
+  // Only emit a marker when there's actually a recording to attach it to.
+  // Without the gate, an UP tap with recording off would flash "Marked"
+  // even though the Android side drops the event on the floor.
+  if (s_recording) {
     send_event(MESSAGE_KEY_MARKER, 1);
+    show_marker_flash();
   }
 }
 
@@ -686,6 +734,14 @@ static void window_load(Window *window) {
   layer_set_update_proc(s_rec_indicator_layer, rec_indicator_update_proc);
   layer_add_child(s_root_layer, s_rec_indicator_layer);
 
+  // Marker-flash overlay: added LAST so it draws on top of every other
+  // layer when shown. Hidden by default — show_marker_flash() un-hides and
+  // arms a timer to re-hide after MARKER_FLASH_MS.
+  s_marker_flash_layer = layer_create(b);
+  layer_set_update_proc(s_marker_flash_layer, marker_flash_update_proc);
+  layer_set_hidden(s_marker_flash_layer, true);
+  layer_add_child(s_root_layer, s_marker_flash_layer);
+
   update_bpm_text();
   update_action_text();
   update_stats_text();
@@ -700,6 +756,7 @@ static void window_unload(Window *window) {
   text_layer_destroy(s_rec_layer);
   layer_destroy(s_beat_dots_layer);
   layer_destroy(s_rec_indicator_layer);
+  layer_destroy(s_marker_flash_layer);
 }
 
 static void init(void) {
