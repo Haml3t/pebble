@@ -669,6 +669,9 @@ static void window_load(Window *window) {
   // Discoverability hint for the help screen — small + dim so it doesn't
   // compete with the action prompt above it, but always present so users
   // who don't read this comment can still find their way to the guide.
+  // TODO: remove this on-screen hint once the app is published — the
+  // gesture will live in the Pebble Android app / app-store listing
+  // description instead, keeping the watch UI uncluttered for regular use.
   s_help_hint_layer = text_layer_create(GRect(0, 160, b.size.w, 18));
   text_layer_set_background_color(s_help_hint_layer, GColorClear);
   text_layer_set_text_color(s_help_hint_layer, GColorDarkGray);
