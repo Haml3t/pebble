@@ -6,6 +6,17 @@ set -euo pipefail
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 IMAGE="${ANDROID_BUILD_IMAGE:-cimg/android:2024.10}"
 
+# Mirror the editor assets from tools/audio-editor/ into the Android assets
+# bundle before each build. There's one source of truth — the laptop tree —
+# and any drift between the two has caused real bugs (laptop UI shipped a
+# feature the phone-side WebView didn't have).
+SRC_ASSETS="${PROJECT_DIR}/tools/audio-editor"
+DST_ASSETS="${PROJECT_DIR}/android/app/src/main/assets/audio-editor"
+mkdir -p "${DST_ASSETS}"
+for f in app.js index.html style.css; do
+  cp "${SRC_ASSETS}/${f}" "${DST_ASSETS}/${f}"
+done
+
 # Persist the debug keystore across builds. Without this, every container
 # generates a fresh ~/.android/debug.keystore, and `adb install -r` rejects
 # the new APK because the signature changed — forcing an uninstall, which

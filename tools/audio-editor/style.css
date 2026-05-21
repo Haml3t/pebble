@@ -30,12 +30,14 @@ header h1 { margin: 0; font-size: 16px; font-weight: 600; }
 }
 #sidebar h2 { font-size: 12px; text-transform: uppercase;
               color: #8a8f99; margin: 0 0 8px; }
-#refresh {
+#refresh, #sync {
   font-size: 11px; background: #2c3038; color: #d6d8de;
   border: 1px solid #3a3f49; padding: 4px 10px; border-radius: 4px;
   cursor: pointer; margin-bottom: 8px;
 }
-#refresh:hover { background: #353a45; }
+#refresh:hover, #sync:hover { background: #353a45; }
+#sync { margin-left: 4px; }
+#sync:disabled { opacity: 0.5; cursor: wait; }
 
 #files { list-style: none; margin: 0; padding: 0; }
 #files li, ul.clips li {

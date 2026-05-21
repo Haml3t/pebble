@@ -17,6 +17,7 @@ const shareBtn      = $("#share-package");
 const timeEl        = $("#time");
 const selInfoEl     = $("#selection-info");
 const refreshBtn    = $("#refresh");
+const syncBtn       = $("#sync");
 const bpmAxisEl     = $("#bpm-axis");
 const backBtn       = $("#back-to-list");
 
@@ -840,6 +841,43 @@ window.addEventListener("keydown", (e) => {
   addMarkerAtPlayhead();
 });
 refreshBtn.addEventListener("click", refreshFileList);
+// The Sync button drives `adb push/pull` against the phone, which only
+// makes sense from the laptop side. The Android WebView injects
+// GlanceBridge; when that's present we're already on the phone with
+// direct file access, so sync is meaningless — hide the button.
+if (typeof GlanceBridge !== "undefined" && GlanceBridge.isAvailable && GlanceBridge.isAvailable()) {
+  syncBtn.hidden = true;
+}
+syncBtn.addEventListener("click", async () => {
+  syncBtn.disabled = true;
+  setStatus("syncing with phone…");
+  try {
+    const res = await fetch("/api/sync", { method: "POST" });
+    const data = await res.json();
+    if (!data.ok) {
+      setStatus("sync failed: " + (data.error || "unknown"));
+    } else {
+      const parts = [];
+      if (data.pulled.length) parts.push("pulled " + data.pulled.length);
+      if (data.pushed.length) parts.push("pushed " + data.pushed.length);
+      if (data.merged.length) parts.push("merged " + data.merged.length);
+      setStatus("sync ok · " + (parts.join(" · ") || "no changes"));
+      refreshFileList();
+      // If a recording is open, re-fetch its markers in case the merge
+      // brought in something new from the phone.
+      if (currentFile) {
+        const md = await fetch("/api/markers?audio=" +
+                               encodeURIComponent(currentFile.name)).then(r => r.json());
+        markers = (md && md.markers) || [];
+        redrawOverlays();
+      }
+    }
+  } catch (e) {
+    setStatus("sync failed: " + e.message);
+  } finally {
+    syncBtn.disabled = false;
+  }
+});
 backBtn.addEventListener("click", () => {
   stopPlayback();
   document.body.classList.remove("editor-open");

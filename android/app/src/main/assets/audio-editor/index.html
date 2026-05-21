@@ -19,6 +19,7 @@
     <aside id="sidebar">
       <h2>Recordings</h2>
       <button id="refresh">↻ refresh</button>
+      <button id="sync" title="two-way sync with phone via adb">⇄ sync</button>
       <ul id="files"></ul>
     </aside>
     <main id="editor">
@@ -44,6 +45,7 @@
         <button id="play-selection" disabled title="play selection">▶ sel</button>
         <button id="clear-selection" disabled title="clear selection">✕</button>
         <button id="save-clip" disabled title="save selection as WAV">💾 WAV</button>
+        <button id="add-marker" disabled title="add marker at playhead (m)">📍 mark</button>
         <button id="share-package" disabled title="share as zip">📦 zip</button>
         <button id="export-file" disabled title="export / download this file">⬇️ export</button>
         <button id="delete-recording" disabled title="delete this recording (m4a + sidecar)" class="danger">🗑️</button>
@@ -54,6 +56,8 @@
         Green bands on the BPM track are stretches where the metronome was ticking.
         Share package bundles the .m4a + .json sidecar into a .zip a friend
         can drop into their own copy of <code>tools/audio-editor/recordings/</code>.
+        Press <kbd>m</kbd> (or 📍 mark) to drop a marker at the playhead;
+        markers from the watch's UP button show up automatically.
       </p>
     </main>
   </div>

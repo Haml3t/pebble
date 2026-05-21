@@ -53,6 +53,172 @@ def adb_pull():
         print(last or "(no output)")
 
 
+# === Bidirectional sync ===================================================
+
+def _adb_ls():
+    """Files (not directories) directly under PHONE_DIR. Returns None if
+    adb is unavailable / phone unreachable. `find -maxdepth 1 -type f`
+    (default output = one full path per line) so we don't try to mirror
+    sub-directories like `share/`. We avoid `-printf '%f\\n'` because the
+    remote sh eats the literal `\\n` before find sees it, producing one
+    giant joined string."""
+    if not shutil.which("adb"):
+        return None
+    res = subprocess.run(
+        ["adb", "shell", "find", PHONE_DIR,
+         "-maxdepth", "1", "-type", "f"],
+        capture_output=True, text=True)
+    if res.returncode != 0:
+        return None
+    prefix = PHONE_DIR.rstrip("/") + "/"
+    names = set()
+    for ln in res.stdout.splitlines():
+        ln = ln.strip()
+        if not ln:
+            continue
+        names.add(ln[len(prefix):] if ln.startswith(prefix) else ln)
+    return names
+
+
+def _is_syncable(name: str) -> bool:
+    """Skip files we never want to round-trip: pending recordings (mid-write
+    on the phone side) and any hidden/tmp scratch files we use during merge."""
+    if name.endswith("_pending.m4a") or name.endswith("_pending.json"):
+        return False
+    if name.startswith("_phone_"):
+        return False
+    return True
+
+
+def _adb_push(local_path: Path, remote_name: str) -> bool:
+    cmd = ["adb", "push", "-p", str(local_path), PHONE_DIR + "/" + remote_name]
+    res = subprocess.run(cmd, capture_output=True, text=True)
+    if res.returncode != 0:
+        print(f"adb push {remote_name} failed: {res.stderr.strip()}")
+        return False
+    return True
+
+
+def _adb_pull_one(remote_name: str, local_path: Path) -> bool:
+    cmd = ["adb", "pull", "-a", PHONE_DIR + "/" + remote_name, str(local_path)]
+    res = subprocess.run(cmd, capture_output=True, text=True)
+    if res.returncode != 0:
+        print(f"adb pull {remote_name} failed: {res.stderr.strip()}")
+        return False
+    return True
+
+
+def _merge_starred(local_meta: dict, phone_path: Path) -> dict:
+    """Union of starred lists from both sides — stars are sticky and removals
+    are rare enough that 'last to win' would be the wrong default."""
+    phone_meta = {"starred": []}
+    if phone_path.exists():
+        try:
+            phone_meta = json.loads(phone_path.read_text())
+        except Exception:
+            pass
+    merged = sorted(set(local_meta.get("starred", []))
+                    | set(phone_meta.get("starred", [])))
+    return {"starred": merged}
+
+
+def _merge_markers(local_path: Path, phone_path: Path) -> dict:
+    """Merge two .markers.json files: bucket by t_ms, prefer the entry with
+    a non-empty note. Editor-saved notes always beat the empty stub a watch
+    UP-press would seed."""
+    def _load(p):
+        if not p.exists():
+            return []
+        try:
+            return json.loads(p.read_text()).get("markers", []) or []
+        except Exception:
+            return []
+    a = _load(local_path)
+    b = _load(phone_path)
+    by_t = {}
+    for src in (a, b):
+        for m in src:
+            try:
+                t = int(m.get("t_ms", 0))
+            except Exception:
+                continue
+            note = str(m.get("note", ""))[:500]
+            existing = by_t.get(t)
+            # Prefer the entry with a longer note (non-empty wins over empty,
+            # later edits over earlier truncations).
+            if existing is None or len(note) > len(existing["note"]):
+                by_t[t] = {"t_ms": t, "note": note}
+    return {"markers": sorted(by_t.values(), key=lambda m: m["t_ms"])}
+
+
+def sync_with_phone() -> dict:
+    """Two-way mirror between LOCAL_DIR and PHONE_DIR via adb. Returns a
+    summary dict the API endpoint can ship back to the UI."""
+    summary = {"pulled": [], "pushed": [], "merged": [], "ok": False,
+               "error": None}
+    if not shutil.which("adb"):
+        summary["error"] = "adb not on PATH"
+        return summary
+    LOCAL_DIR.mkdir(exist_ok=True)
+
+    phone_files = _adb_ls()
+    if phone_files is None:
+        summary["error"] = "phone not reachable via adb"
+        return summary
+
+    local_files = {f.name for f in LOCAL_DIR.iterdir()
+                   if f.is_file() and f.name != "metadata.json"
+                   and not f.name.endswith(".markers.json")
+                   and _is_syncable(f.name)}
+    phone_files = {n for n in phone_files if _is_syncable(n)}
+
+    # 1. Files only on phone → pull. (m4a, json sidecars, zip packages, wavs
+    # the phone made via its own editor.)
+    for name in phone_files - local_files:
+        if name == "metadata.json" or name.endswith(".markers.json"):
+            continue  # handled by merge step below
+        if _adb_pull_one(name, LOCAL_DIR / name):
+            summary["pulled"].append(name)
+
+    # 2. Files only on laptop → push.
+    for name in local_files - phone_files:
+        if _adb_push(LOCAL_DIR / name, name):
+            summary["pushed"].append(name)
+
+    # 3. metadata.json (starred): union both sides, write to both.
+    local_meta = _load_meta()
+    # Stash the phone copy in a tmp file we can read+merge without
+    # clobbering the laptop's copy.
+    tmp = LOCAL_DIR / "_phone_metadata.json"
+    if "metadata.json" in phone_files and _adb_pull_one("metadata.json", tmp):
+        merged = _merge_starred(local_meta, tmp)
+        tmp.unlink()
+    else:
+        merged = local_meta
+    _save_meta(merged)
+    if _adb_push(META_PATH, "metadata.json"):
+        summary["merged"].append("metadata.json")
+
+    # 4. *.markers.json: merge each side's set by t_ms.
+    laptop_markers = {f.name for f in LOCAL_DIR.iterdir()
+                      if f.name.endswith(".markers.json")}
+    phone_markers = {n for n in phone_files if n.endswith(".markers.json")}
+    for name in laptop_markers | phone_markers:
+        local = LOCAL_DIR / name
+        phone_tmp = LOCAL_DIR / ("_phone_" + name)
+        if name in phone_markers:
+            _adb_pull_one(name, phone_tmp)
+        merged = _merge_markers(local, phone_tmp)
+        if phone_tmp.exists():
+            phone_tmp.unlink()
+        local.write_text(json.dumps(merged, indent=2))
+        if _adb_push(local, name):
+            summary["merged"].append(name)
+
+    summary["ok"] = True
+    return summary
+
+
 META_PATH = LOCAL_DIR / "metadata.json"
 
 
@@ -131,6 +297,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return self._set_star(parse_qs(parsed.query))
         if parsed.path == "/api/markers":
             return self._save_markers(parse_qs(parsed.query))
+        if parsed.path == "/api/sync":
+            return self._do_sync()
         if parsed.path != "/api/save-clip":
             self.send_error(404)
             return
@@ -249,6 +417,15 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def _do_sync(self):
+        result = sync_with_phone()
+        body = json.dumps(result).encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
     def _set_star(self, qs):
         name = (qs.get("name") or [""])[0]
         value = (qs.get("value") or ["true"])[0].lower() == "true"
@@ -361,7 +538,11 @@ def main():
     args = ap.parse_args()
 
     if not args.no_pull:
-        adb_pull()
+        summary = sync_with_phone()
+        if summary.get("ok"):
+            print(f"sync: pulled={len(summary['pulled'])} pushed={len(summary['pushed'])} merged={len(summary['merged'])}")
+        else:
+            print(f"sync skipped: {summary.get('error')}")
 
     socketserver.TCPServer.allow_reuse_address = True
     with socketserver.TCPServer(("127.0.0.1", args.port), Handler) as httpd:

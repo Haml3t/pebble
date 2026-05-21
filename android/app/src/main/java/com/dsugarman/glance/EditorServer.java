@@ -176,7 +176,7 @@ class EditorServer implements Runnable {
             }
 
             if ("GET".equals(method)) {
-                routeGet(client, path);
+                routeGet(client, path, query);
             } else if ("POST".equals(method)) {
                 routePost(client, path, query, rawIn, reader, contentLength);
             } else {
@@ -189,7 +189,7 @@ class EditorServer implements Runnable {
 
     // ---- GET routes -----------------------------------------------------
 
-    private void routeGet(Socket client, String path) throws IOException {
+    private void routeGet(Socket client, String path, String query) throws IOException {
         if (path.equals("/") || path.equals("/index.html")) {
             serveAsset(client, "audio-editor/index.html", "text/html; charset=utf-8");
         } else if (path.equals("/app.js")) {
@@ -198,6 +198,8 @@ class EditorServer implements Runnable {
             serveAsset(client, "audio-editor/style.css", "text/css; charset=utf-8");
         } else if (path.equals("/api/files")) {
             serveFileList(client);
+        } else if (path.equals("/api/markers")) {
+            getMarkers(client, query);
         } else if (path.startsWith("/recordings/")) {
             String name = path.substring("/recordings/".length());
             serveRecording(client, name);
@@ -319,6 +321,10 @@ class EditorServer implements Runnable {
             setStar(client, query);
             return;
         }
+        if (path.equals("/api/markers")) {
+            saveMarkers(client, query, rawIn, contentLength);
+            return;
+        }
         if (!path.equals("/api/save-clip")) {
             writeStatus(client, 404, "Not Found");
             return;
@@ -413,6 +419,220 @@ class EditorServer implements Runnable {
         String body = "{\"name\":\"" + name + "\",\"starred\":" + on + "}";
         writeResponse(client, 200, "OK", "application/json",
                 body.getBytes(StandardCharsets.UTF_8));
+    }
+
+    // ---- /api/markers ---------------------------------------------------
+
+    private File markersFile(String audioName) {
+        // foo.m4a → foo.markers.json next to it (same convention as
+        // tools/audio-editor/server.py — see _markers_path there).
+        int dot = audioName.lastIndexOf('.');
+        String stem = dot > 0 ? audioName.substring(0, dot) : audioName;
+        return new File(metronomeDir(), stem + ".markers.json");
+    }
+
+    /**
+     * Parse stored editor markers — `{"markers":[{"t_ms":N,"note":"..."},...]}`.
+     * Hand-parsed to avoid pulling in a JSON library. Notes containing `}` or
+     * escaped quotes are handled, but truly adversarial payloads aren't —
+     * the only writer is our own POST endpoint.
+     */
+    private List<int[]> readEditorMarkers(String audioName, List<String> outNotes) {
+        List<int[]> out = new ArrayList<>();
+        File f = markersFile(audioName);
+        if (!f.exists()) return out;
+        try (java.io.FileReader fr = new java.io.FileReader(f)) {
+            java.io.BufferedReader br = new java.io.BufferedReader(fr);
+            StringBuilder sb = new StringBuilder();
+            String line; while ((line = br.readLine()) != null) sb.append(line);
+            Matcher mm = Pattern.compile(
+                    "\\{[^{}]*?\"t_ms\"\\s*:\\s*(-?\\d+)[^{}]*?" +
+                    "\"note\"\\s*:\\s*\"((?:[^\"\\\\]|\\\\.)*)\"[^{}]*?\\}")
+                .matcher(sb.toString());
+            while (mm.find()) {
+                int t = Integer.parseInt(mm.group(1));
+                String note = unescapeJsonString(mm.group(2));
+                out.add(new int[]{ t, 0 });
+                outNotes.add(note);
+            }
+        } catch (Exception e) {
+            Log.w(TAG, "readEditorMarkers failed", e);
+        }
+        return out;
+    }
+
+    /**
+     * Pull `type=marker` events from the m4a's existing sidecar (written by
+     * MetronomeService). These represent watch UP-button presses during
+     * recording; the editor surfaces them as unannotated markers.
+     */
+    private List<Integer> readWatchMarkers(String audioName) {
+        List<Integer> out = new ArrayList<>();
+        if (!audioName.endsWith(".m4a")) return out;
+        String stem = audioName.substring(0, audioName.length() - 4);
+        File sidecar = new File(metronomeDir(), stem + ".json");
+        if (!sidecar.exists()) return out;
+        try (java.io.FileReader fr = new java.io.FileReader(sidecar)) {
+            java.io.BufferedReader br = new java.io.BufferedReader(fr);
+            StringBuilder sb = new StringBuilder();
+            String line; while ((line = br.readLine()) != null) sb.append(line);
+            Matcher mm = Pattern.compile(
+                    "\\{[^{}]*?\"t_ms\"\\s*:\\s*(-?\\d+)[^{}]*?" +
+                    "\"type\"\\s*:\\s*\"marker\"[^{}]*?\\}").matcher(sb.toString());
+            while (mm.find()) out.add(Integer.parseInt(mm.group(1)));
+        } catch (Exception e) {
+            Log.w(TAG, "readWatchMarkers failed", e);
+        }
+        return out;
+    }
+
+    private void getMarkers(Socket client, String query) throws IOException {
+        String audio = paramFromQuery(query, "audio");
+        if (audio == null || audio.isEmpty() || audio.contains("/")
+                || audio.contains("\\") || audio.contains("..")) {
+            writeStatus(client, 400, "Bad Request");
+            return;
+        }
+        List<String> notes = new ArrayList<>();
+        List<int[]> editor = readEditorMarkers(audio, notes);
+        // Dedupe by t_ms — editor's annotated markers win over the raw
+        // sidecar event, mirroring the Python server's merge.
+        java.util.HashSet<Integer> seen = new java.util.HashSet<>();
+        for (int[] m : editor) seen.add(m[0]);
+        List<Integer> watch = readWatchMarkers(audio);
+
+        StringBuilder json = new StringBuilder("{\"markers\":[");
+        boolean first = true;
+        // Combine + sort by t_ms.
+        List<int[]> combinedTs = new ArrayList<>();
+        List<String> combinedNotes = new ArrayList<>();
+        List<Boolean> combinedIsWatch = new ArrayList<>();
+        for (int i = 0; i < editor.size(); i++) {
+            combinedTs.add(editor.get(i));
+            combinedNotes.add(notes.get(i));
+            combinedIsWatch.add(false);
+        }
+        for (int t : watch) {
+            if (seen.contains(t)) continue;
+            combinedTs.add(new int[]{ t, 0 });
+            combinedNotes.add("");
+            combinedIsWatch.add(true);
+        }
+        // Insertion sort — marker counts are small (handful per recording).
+        for (int i = 1; i < combinedTs.size(); i++) {
+            for (int j = i; j > 0 && combinedTs.get(j)[0] < combinedTs.get(j - 1)[0]; j--) {
+                int[] ts = combinedTs.get(j); combinedTs.set(j, combinedTs.get(j - 1)); combinedTs.set(j - 1, ts);
+                String n = combinedNotes.get(j); combinedNotes.set(j, combinedNotes.get(j - 1)); combinedNotes.set(j - 1, n);
+                Boolean w = combinedIsWatch.get(j); combinedIsWatch.set(j, combinedIsWatch.get(j - 1)); combinedIsWatch.set(j - 1, w);
+            }
+        }
+        for (int i = 0; i < combinedTs.size(); i++) {
+            if (!first) json.append(",");
+            first = false;
+            json.append("{\"t_ms\":").append(combinedTs.get(i)[0])
+                .append(",\"note\":\"").append(escapeJsonString(combinedNotes.get(i))).append("\"");
+            if (combinedIsWatch.get(i)) json.append(",\"source\":\"watch\"");
+            json.append("}");
+        }
+        json.append("]}");
+        writeResponse(client, 200, "OK", "application/json",
+                json.toString().getBytes(StandardCharsets.UTF_8));
+    }
+
+    private void saveMarkers(Socket client, String query,
+                             InputStream rawIn, int contentLength) throws IOException {
+        String audio = paramFromQuery(query, "audio");
+        if (audio == null || audio.isEmpty() || audio.contains("/")
+                || audio.contains("\\") || audio.contains("..")) {
+            writeStatus(client, 400, "Bad Request");
+            return;
+        }
+        // Read JSON body off the raw stream (BufferedReader already consumed
+        // the headers up to the blank line — see routePost comment).
+        byte[] buf = new byte[contentLength];
+        int got = 0;
+        while (got < contentLength) {
+            int n = rawIn.read(buf, got, contentLength - got);
+            if (n < 0) break;
+            got += n;
+        }
+        String body = new String(buf, 0, got, StandardCharsets.UTF_8);
+        // Match individual marker objects inside the JSON array. Same
+        // hand-parse pattern as readEditorMarkers.
+        Matcher mm = Pattern.compile(
+                "\\{[^{}]*?\"t_ms\"\\s*:\\s*(-?\\d+)[^{}]*?" +
+                "\"note\"\\s*:\\s*\"((?:[^\"\\\\]|\\\\.)*)\"[^{}]*?\\}").matcher(body);
+        List<int[]> ts = new ArrayList<>();
+        List<String> notes = new ArrayList<>();
+        while (mm.find()) {
+            ts.add(new int[]{ Integer.parseInt(mm.group(1)), 0 });
+            String note = unescapeJsonString(mm.group(2));
+            if (note.length() > 500) note = note.substring(0, 500);
+            notes.add(note);
+        }
+        // Sort by t_ms before writing.
+        for (int i = 1; i < ts.size(); i++) {
+            for (int j = i; j > 0 && ts.get(j)[0] < ts.get(j - 1)[0]; j--) {
+                int[] tt = ts.get(j); ts.set(j, ts.get(j - 1)); ts.set(j - 1, tt);
+                String n = notes.get(j); notes.set(j, notes.get(j - 1)); notes.set(j - 1, n);
+            }
+        }
+        StringBuilder out = new StringBuilder("{\n  \"markers\": [");
+        for (int i = 0; i < ts.size(); i++) {
+            if (i > 0) out.append(",");
+            out.append("\n    {\"t_ms\": ").append(ts.get(i)[0])
+               .append(", \"note\": \"").append(escapeJsonString(notes.get(i))).append("\"}");
+        }
+        out.append("\n  ]\n}\n");
+        try (FileOutputStream fos = new FileOutputStream(markersFile(audio))) {
+            fos.write(out.toString().getBytes(StandardCharsets.UTF_8));
+        }
+        String resp = "{\"count\":" + ts.size() + "}";
+        writeResponse(client, 200, "OK", "application/json",
+                resp.getBytes(StandardCharsets.UTF_8));
+    }
+
+    private static String escapeJsonString(String s) {
+        StringBuilder b = new StringBuilder(s.length() + 4);
+        for (int i = 0; i < s.length(); i++) {
+            char c = s.charAt(i);
+            switch (c) {
+                case '"':  b.append("\\\""); break;
+                case '\\': b.append("\\\\"); break;
+                case '\n': b.append("\\n");  break;
+                case '\r': b.append("\\r");  break;
+                case '\t': b.append("\\t");  break;
+                default:
+                    if (c < 0x20) {
+                        b.append(String.format("\\u%04x", (int) c));
+                    } else {
+                        b.append(c);
+                    }
+            }
+        }
+        return b.toString();
+    }
+
+    private static String unescapeJsonString(String s) {
+        StringBuilder b = new StringBuilder(s.length());
+        for (int i = 0; i < s.length(); i++) {
+            char c = s.charAt(i);
+            if (c == '\\' && i + 1 < s.length()) {
+                char n = s.charAt(++i);
+                switch (n) {
+                    case '"':  b.append('"');  break;
+                    case '\\': b.append('\\'); break;
+                    case 'n':  b.append('\n'); break;
+                    case 'r':  b.append('\r'); break;
+                    case 't':  b.append('\t'); break;
+                    case '/':  b.append('/');  break;
+                    default:   b.append(n);    break;
+                }
+            } else {
+                b.append(c);
+            }
+        }
+        return b.toString();
     }
 
     private void makePackage(Socket client, String query) throws IOException {

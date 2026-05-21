@@ -30,12 +30,14 @@ header h1 { margin: 0; font-size: 16px; font-weight: 600; }
 }
 #sidebar h2 { font-size: 12px; text-transform: uppercase;
               color: #8a8f99; margin: 0 0 8px; }
-#refresh {
+#refresh, #sync {
   font-size: 11px; background: #2c3038; color: #d6d8de;
   border: 1px solid #3a3f49; padding: 4px 10px; border-radius: 4px;
   cursor: pointer; margin-bottom: 8px;
 }
-#refresh:hover { background: #353a45; }
+#refresh:hover, #sync:hover { background: #353a45; }
+#sync { margin-left: 4px; }
+#sync:disabled { opacity: 0.5; cursor: wait; }
 
 #files { list-style: none; margin: 0; padding: 0; }
 #files li, ul.clips li {
@@ -109,6 +111,28 @@ ul.clips li.clip .grow .name { color: #aab1c1; }
 .overlay {
   position: absolute; inset: 0; pointer-events: none;
 }
+
+/* Marker = thin vertical line spanning the waveform with a numbered flag
+   at the top. Only the flag accepts clicks so dragging on the waveform
+   itself (for selection) isn't blocked by the marker overlay. */
+.marker {
+  position: absolute; top: 0; height: 100%; width: 0;
+  border-left: 1px dashed rgba(252, 204, 102, 0.7);
+  pointer-events: none;
+}
+.marker.unannotated { border-left-color: rgba(140, 200, 255, 0.7); }
+.marker-flag {
+  position: absolute; top: 0; left: -9px;
+  width: 18px; height: 16px;
+  background: #fc6; color: #1d2026;
+  border: 1px solid #c93; border-radius: 2px;
+  font-size: 10px; font-weight: 700; line-height: 14px; text-align: center;
+  cursor: pointer; pointer-events: auto; user-select: none;
+}
+.marker.unannotated .marker-flag {
+  background: #8cc8ff; border-color: #5ea0d6;
+}
+.marker-flag:hover { filter: brightness(1.15); }
 
 #ruler-row { margin-bottom: 12px; }
 #ruler { display: block; width: 100%; touch-action: none; }
