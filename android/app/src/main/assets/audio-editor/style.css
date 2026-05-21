@@ -62,6 +62,9 @@ header h1 { margin: 0; font-size: 16px; font-weight: 600; }
 .grow { flex: 1; min-width: 0; }
 .grow .name { display: block; color: #d6d8de; font-family: monospace;
               overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.grow .filename { display: block; color: #8a8f99; font-size: 11px;
+                  font-family: monospace; margin-top: 2px;
+                  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .grow .meta { display: block; color: #8a8f99; font-size: 11px; margin-top: 2px;
               overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 #files li.no-sidecar .grow .meta::after { content: " · no BPM data"; color: #c66; }

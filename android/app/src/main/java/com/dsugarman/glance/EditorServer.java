@@ -106,44 +106,105 @@ class EditorServer implements Runnable {
     // compatible between the on-phone and on-laptop editors.
     private File metaFile() { return new File(metronomeDir(), "metadata.json"); }
 
-    private java.util.HashSet<String> loadStarred() {
-        java.util.HashSet<String> set = new java.util.HashSet<>();
+    /** Aggregate metadata persisted to metronome/metadata.json. Schema matches
+     *  the Python server: starred list + display-name + decoded-duration maps. */
+    private static class Meta {
+        java.util.HashSet<String> starred = new java.util.HashSet<>();
+        java.util.HashMap<String, String> names = new java.util.HashMap<>();
+        java.util.HashMap<String, Double> durations = new java.util.HashMap<>();
+    }
+
+    private Meta loadMeta() {
+        Meta m = new Meta();
         File f = metaFile();
-        if (!f.exists()) return set;
+        if (!f.exists()) return m;
         try (java.io.FileReader fr = new java.io.FileReader(f)) {
             java.io.BufferedReader br = new java.io.BufferedReader(fr);
             StringBuilder sb = new StringBuilder();
             String line; while ((line = br.readLine()) != null) sb.append(line);
             String body = sb.toString();
-            // Tiny hand-parse — the file only ever contains
-            // {"starred":["foo","bar",...]}. Avoids pulling in org.json.
-            Matcher mm = Pattern.compile("\"starred\"\\s*:\\s*\\[(.*?)\\]",
+            // starred array
+            Matcher sm = Pattern.compile("\"starred\"\\s*:\\s*\\[(.*?)\\]",
                     Pattern.DOTALL).matcher(body);
-            if (mm.find()) {
-                String inside = mm.group(1);
-                Matcher nm = Pattern.compile("\"((?:[^\"\\\\]|\\\\.)*)\"").matcher(inside);
-                while (nm.find()) set.add(nm.group(1));
+            if (sm.find()) {
+                Matcher nm = Pattern.compile("\"((?:[^\"\\\\]|\\\\.)*)\"").matcher(sm.group(1));
+                while (nm.find()) m.starred.add(unescapeJsonString(nm.group(1)));
+            }
+            // names object — {"foo.m4a": "Display name", ...}
+            Matcher nmObj = Pattern.compile("\"names\"\\s*:\\s*\\{(.*?)\\}",
+                    Pattern.DOTALL).matcher(body);
+            if (nmObj.find()) {
+                Matcher kv = Pattern.compile(
+                        "\"((?:[^\"\\\\]|\\\\.)*)\"\\s*:\\s*" +
+                        "\"((?:[^\"\\\\]|\\\\.)*)\"").matcher(nmObj.group(1));
+                while (kv.find()) {
+                    m.names.put(unescapeJsonString(kv.group(1)),
+                                unescapeJsonString(kv.group(2)));
+                }
+            }
+            // durations object — {"foo.m4a": 422.5, ...}
+            Matcher dObj = Pattern.compile("\"durations\"\\s*:\\s*\\{(.*?)\\}",
+                    Pattern.DOTALL).matcher(body);
+            if (dObj.find()) {
+                Matcher kv = Pattern.compile(
+                        "\"((?:[^\"\\\\]|\\\\.)*)\"\\s*:\\s*(-?\\d+(?:\\.\\d+)?)")
+                    .matcher(dObj.group(1));
+                while (kv.find()) {
+                    try {
+                        m.durations.put(unescapeJsonString(kv.group(1)),
+                                        Double.parseDouble(kv.group(2)));
+                    } catch (NumberFormatException ignored) {}
+                }
             }
         } catch (IOException ignored) {}
-        return set;
+        return m;
     }
 
-    private void saveStarred(java.util.Set<String> starred) {
+    private void saveMeta(Meta m) {
         StringBuilder sb = new StringBuilder();
-        sb.append("{\n  \"starred\": [");
+        sb.append("{\n");
+        // starred
+        java.util.List<String> sortedStars = new ArrayList<>(m.starred);
+        java.util.Collections.sort(sortedStars);
+        sb.append("  \"starred\": [");
         boolean first = true;
-        java.util.List<String> sorted = new ArrayList<>(starred);
-        java.util.Collections.sort(sorted);
-        for (String s : sorted) {
+        for (String s : sortedStars) {
             if (!first) sb.append(",");
             first = false;
-            sb.append("\n    \"").append(s.replace("\\", "\\\\").replace("\"", "\\\"")).append("\"");
+            sb.append("\n    \"").append(escapeJsonString(s)).append("\"");
         }
-        sb.append("\n  ]\n}\n");
+        if (!sortedStars.isEmpty()) sb.append("\n  ");
+        sb.append("],\n");
+        // names
+        java.util.List<String> sortedNames = new ArrayList<>(m.names.keySet());
+        java.util.Collections.sort(sortedNames);
+        sb.append("  \"names\": {");
+        first = true;
+        for (String k : sortedNames) {
+            if (!first) sb.append(",");
+            first = false;
+            sb.append("\n    \"").append(escapeJsonString(k)).append("\": \"")
+              .append(escapeJsonString(m.names.get(k))).append("\"");
+        }
+        if (!sortedNames.isEmpty()) sb.append("\n  ");
+        sb.append("},\n");
+        // durations
+        java.util.List<String> sortedDurs = new ArrayList<>(m.durations.keySet());
+        java.util.Collections.sort(sortedDurs);
+        sb.append("  \"durations\": {");
+        first = true;
+        for (String k : sortedDurs) {
+            if (!first) sb.append(",");
+            first = false;
+            sb.append("\n    \"").append(escapeJsonString(k)).append("\": ")
+              .append(m.durations.get(k));
+        }
+        if (!sortedDurs.isEmpty()) sb.append("\n  ");
+        sb.append("}\n}\n");
         try (FileOutputStream fos = new FileOutputStream(metaFile())) {
             fos.write(sb.toString().getBytes(StandardCharsets.UTF_8));
         } catch (IOException e) {
-            Log.w(TAG, "saveStarred failed", e);
+            Log.w(TAG, "saveMeta failed", e);
         }
     }
 
@@ -218,7 +279,10 @@ class EditorServer implements Runnable {
     }
 
     private void serveFileList(Socket client) throws IOException {
-        java.util.HashSet<String> starred = loadStarred();
+        Meta meta = loadMeta();
+        java.util.HashSet<String> starred = meta.starred;
+        java.util.HashMap<String, String> names = meta.names;
+        java.util.HashMap<String, Double> durations = meta.durations;
         StringBuilder json = new StringBuilder("[");
         File dir = metronomeDir();
         File[] entries = dir.listFiles();
@@ -252,19 +316,35 @@ class EditorServer implements Runnable {
                 for (File c : clips) {
                     if (!firstClip) clipsJson.append(",");
                     firstClip = false;
-                    clipsJson.append("{\"name\":\"").append(c.getName()).append("\"")
+                    String clipName = c.getName();
+                    String clipDisplay = names.get(clipName);
+                    Double clipDur = durations.get(clipName);
+                    clipsJson.append("{\"name\":\"").append(clipName).append("\"")
                              .append(",\"size\":").append(c.length())
-                             .append(",\"starred\":").append(starred.contains(c.getName()))
+                             .append(",\"starred\":").append(starred.contains(clipName))
+                             .append(",\"display_name\":")
+                             .append(clipDisplay == null ? "null"
+                                     : "\"" + escapeJsonString(clipDisplay) + "\"")
+                             .append(",\"duration_sec\":")
+                             .append(clipDur == null ? "null" : clipDur)
                              .append("}");
                 }
                 clipsJson.append("]");
-                json.append("{\"name\":\"").append(f.getName()).append("\"")
+                String pName = f.getName();
+                String pDisplay = names.get(pName);
+                Double pDur = durations.get(pName);
+                json.append("{\"name\":\"").append(pName).append("\"")
                     .append(",\"size\":").append(f.length())
                     .append(",\"mtime\":").append(f.lastModified() / 1000.0)
                     .append(",\"has_sidecar\":").append(sidecar.exists())
                     .append(",\"bpm_lo\":").append(lo == null ? "null" : lo)
                     .append(",\"bpm_hi\":").append(hi == null ? "null" : hi)
-                    .append(",\"starred\":").append(starred.contains(f.getName()))
+                    .append(",\"starred\":").append(starred.contains(pName))
+                    .append(",\"display_name\":")
+                    .append(pDisplay == null ? "null"
+                            : "\"" + escapeJsonString(pDisplay) + "\"")
+                    .append(",\"duration_sec\":")
+                    .append(pDur == null ? "null" : pDur)
                     .append(",\"clips\":").append(clipsJson)
                     .append("}");
             }
@@ -323,6 +403,14 @@ class EditorServer implements Runnable {
         }
         if (path.equals("/api/markers")) {
             saveMarkers(client, query, rawIn, contentLength);
+            return;
+        }
+        if (path.equals("/api/rename")) {
+            setDisplayName(client, query);
+            return;
+        }
+        if (path.equals("/api/duration")) {
+            setDuration(client, query);
             return;
         }
         if (!path.equals("/api/save-clip")) {
@@ -391,9 +479,13 @@ class EditorServer implements Runnable {
             writeStatus(client, 400, "must be .m4a or .wav");
             return;
         }
-        java.util.HashSet<String> starred = loadStarred();
-        starred.removeAll(removed);
-        saveStarred(starred);
+        Meta meta = loadMeta();
+        meta.starred.removeAll(removed);
+        for (String r : removed) {
+            meta.names.remove(r);
+            meta.durations.remove(r);
+        }
+        saveMeta(meta);
         StringBuilder b = new StringBuilder("{\"removed\":[");
         for (int i = 0; i < removed.size(); i++) {
             if (i > 0) b.append(",");
@@ -413,9 +505,9 @@ class EditorServer implements Runnable {
             return;
         }
         boolean on = !"false".equalsIgnoreCase(value);
-        java.util.HashSet<String> starred = loadStarred();
-        if (on) starred.add(name); else starred.remove(name);
-        saveStarred(starred);
+        Meta meta = loadMeta();
+        if (on) meta.starred.add(name); else meta.starred.remove(name);
+        saveMeta(meta);
         String body = "{\"name\":\"" + name + "\",\"starred\":" + on + "}";
         writeResponse(client, 200, "OK", "application/json",
                 body.getBytes(StandardCharsets.UTF_8));
@@ -633,6 +725,61 @@ class EditorServer implements Runnable {
             }
         }
         return b.toString();
+    }
+
+    // ---- /api/rename + /api/duration -----------------------------------
+
+    private void setDisplayName(Socket client, String query) throws IOException {
+        String name = paramFromQuery(query, "name");
+        String display = paramFromQuery(query, "display");
+        if (name == null || name.isEmpty() || name.contains("/")
+                || name.contains("\\") || name.contains("..")) {
+            writeStatus(client, 400, "Bad Request");
+            return;
+        }
+        Meta meta = loadMeta();
+        if (display == null || display.trim().isEmpty()) {
+            meta.names.remove(name);
+        } else {
+            String trimmed = display.trim();
+            if (trimmed.length() > 200) trimmed = trimmed.substring(0, 200);
+            meta.names.put(name, trimmed);
+        }
+        saveMeta(meta);
+        String resp = "{\"name\":\"" + name + "\",\"display_name\":"
+                + (meta.names.containsKey(name)
+                    ? "\"" + escapeJsonString(meta.names.get(name)) + "\""
+                    : "null")
+                + "}";
+        writeResponse(client, 200, "OK", "application/json",
+                resp.getBytes(StandardCharsets.UTF_8));
+    }
+
+    private void setDuration(Socket client, String query) throws IOException {
+        String name = paramFromQuery(query, "name");
+        String secStr = paramFromQuery(query, "seconds");
+        if (name == null || name.isEmpty() || secStr == null
+                || name.contains("/") || name.contains("\\") || name.contains("..")) {
+            writeStatus(client, 400, "Bad Request");
+            return;
+        }
+        double sec;
+        try { sec = Double.parseDouble(secStr); }
+        catch (NumberFormatException e) {
+            writeStatus(client, 400, "bad seconds");
+            return;
+        }
+        if (sec <= 0) {
+            writeStatus(client, 400, "non-positive duration");
+            return;
+        }
+        Meta meta = loadMeta();
+        meta.durations.put(name, Math.round(sec * 1000.0) / 1000.0);
+        saveMeta(meta);
+        String resp = "{\"name\":\"" + name + "\",\"duration_sec\":"
+                + meta.durations.get(name) + "}";
+        writeResponse(client, 200, "OK", "application/json",
+                resp.getBytes(StandardCharsets.UTF_8));
     }
 
     private void makePackage(Socket client, String query) throws IOException {

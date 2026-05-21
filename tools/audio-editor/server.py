@@ -108,18 +108,34 @@ def _adb_pull_one(remote_name: str, local_path: Path) -> bool:
     return True
 
 
-def _merge_starred(local_meta: dict, phone_path: Path) -> dict:
-    """Union of starred lists from both sides — stars are sticky and removals
-    are rare enough that 'last to win' would be the wrong default."""
-    phone_meta = {"starred": []}
+def _merge_metadata(local_meta: dict, phone_path: Path) -> dict:
+    """Merge starred (union), names (last-writer-wins, preferring non-empty),
+    and durations (largest value — they should be equal but take the bigger
+    in case one side decoded a complete file and the other a partial)."""
+    phone_meta = {"starred": [], "names": {}, "durations": {}}
     if phone_path.exists():
         try:
-            phone_meta = json.loads(phone_path.read_text())
+            data = json.loads(phone_path.read_text())
+            phone_meta["starred"] = data.get("starred", [])
+            phone_meta["names"] = data.get("names", {}) or {}
+            phone_meta["durations"] = data.get("durations", {}) or {}
         except Exception:
             pass
-    merged = sorted(set(local_meta.get("starred", []))
-                    | set(phone_meta.get("starred", [])))
-    return {"starred": merged}
+    starred = sorted(set(local_meta.get("starred", []))
+                     | set(phone_meta.get("starred", [])))
+    names = {}
+    for src in (phone_meta["names"], local_meta.get("names", {}) or {}):
+        # Local takes precedence on conflict — the laptop is usually where
+        # renames happen via the rename prompt.
+        for k, v in src.items():
+            if v: names[k] = v
+    durations = {}
+    for src in (phone_meta["durations"], local_meta.get("durations", {}) or {}):
+        for k, v in src.items():
+            existing = durations.get(k)
+            if existing is None or (v and v > existing):
+                durations[k] = v
+    return {"starred": starred, "names": names, "durations": durations}
 
 
 def _merge_markers(local_path: Path, phone_path: Path) -> dict:
@@ -191,7 +207,7 @@ def sync_with_phone() -> dict:
     # clobbering the laptop's copy.
     tmp = LOCAL_DIR / "_phone_metadata.json"
     if "metadata.json" in phone_files and _adb_pull_one("metadata.json", tmp):
-        merged = _merge_starred(local_meta, tmp)
+        merged = _merge_metadata(local_meta, tmp)
         tmp.unlink()
     else:
         merged = local_meta
@@ -223,12 +239,19 @@ META_PATH = LOCAL_DIR / "metadata.json"
 
 
 def _load_meta():
+    # Schema: starred = list[str], names = dict[str,str] (filename →
+    # user-set display name), durations = dict[str, float] (filename →
+    # seconds, populated by the editor after decode).
     if META_PATH.exists():
         try:
-            return json.loads(META_PATH.read_text())
+            data = json.loads(META_PATH.read_text())
+            data.setdefault("starred", [])
+            data.setdefault("names", {})
+            data.setdefault("durations", {})
+            return data
         except Exception:
             pass
-    return {"starred": []}
+    return {"starred": [], "names": {}, "durations": {}}
 
 
 def _save_meta(meta):
@@ -299,6 +322,10 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return self._save_markers(parse_qs(parsed.query))
         if parsed.path == "/api/sync":
             return self._do_sync()
+        if parsed.path == "/api/rename":
+            return self._set_display_name(parse_qs(parsed.query))
+        if parsed.path == "/api/duration":
+            return self._set_duration(parse_qs(parsed.query))
         if parsed.path != "/api/save-clip":
             self.send_error(404)
             return
@@ -417,6 +444,51 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def _set_display_name(self, qs):
+        name = (qs.get("name") or [""])[0]
+        display = (qs.get("display") or [""])[0]
+        if not name or "/" in name or ".." in name:
+            self.send_error(400, "bad name")
+            return
+        meta = _load_meta()
+        names = meta.setdefault("names", {})
+        # Empty / whitespace-only display string clears the custom name —
+        # the UI falls back to the parsed timestamp/clip-suffix.
+        if display.strip():
+            names[name] = display.strip()[:200]
+        else:
+            names.pop(name, None)
+        _save_meta(meta)
+        body = json.dumps({"name": name,
+                           "display_name": names.get(name)}).encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _set_duration(self, qs):
+        name = (qs.get("name") or [""])[0]
+        try:
+            seconds = float((qs.get("seconds") or ["0"])[0])
+        except ValueError:
+            self.send_error(400, "bad seconds")
+            return
+        if not name or "/" in name or ".." in name or seconds <= 0:
+            self.send_error(400)
+            return
+        meta = _load_meta()
+        durations = meta.setdefault("durations", {})
+        durations[name] = round(seconds, 3)
+        _save_meta(meta)
+        body = json.dumps({"name": name,
+                           "duration_sec": durations[name]}).encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
     def _do_sync(self):
         result = sync_with_phone()
         body = json.dumps(result).encode("utf-8")
@@ -484,6 +556,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         items = []
         meta = _load_meta()
         starred = set(meta.get("starred", []))
+        names = meta.get("names", {})
+        durations = meta.get("durations", {})
         if LOCAL_DIR.exists():
             for m4a in sorted(LOCAL_DIR.glob("*.m4a"), reverse=True):
                 sidecar = m4a.with_suffix(".json")
@@ -502,6 +576,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                         "name": wav.name,
                         "size": wav.stat().st_size,
                         "starred": wav.name in starred,
+                        "display_name": names.get(wav.name),
+                        "duration_sec": durations.get(wav.name),
                     })
                 items.append({
                     "name": m4a.name,
@@ -511,6 +587,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                     "bpm_lo": bpm_lo,
                     "bpm_hi": bpm_hi,
                     "starred": m4a.name in starred,
+                    "display_name": names.get(m4a.name),
+                    "duration_sec": durations.get(m4a.name),
                     "clips": clips,
                 })
         body = json.dumps(items).encode("utf-8")

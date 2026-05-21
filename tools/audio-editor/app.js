@@ -27,6 +27,7 @@ const waveOverlay   = $("#waveform-overlay");
 const deleteBtn     = $("#delete-recording");
 const exportBtn     = $("#export-file");
 const addMarkerBtn  = $("#add-marker");
+const renameBtn     = $("#rename-recording");
 
 // ---- State --------------------------------------------------------------
 let audioCtx = null;             // lazy-init on first user gesture
@@ -66,6 +67,15 @@ function fmtBytes(n) {
   if (n < 1024) return `${n} B`;
   if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
   return `${(n / 1024 / 1024).toFixed(1)} MB`;
+}
+
+function escapeHtml(s) {
+  // Used everywhere we interpolate user-provided strings (display names)
+  // into our innerHTML templates. The display-name length cap on the
+  // server (200 chars) bounds the worst case but doesn't strip markup.
+  return String(s).replace(/[&<>"']/g, (c) => ({
+    "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
+  })[c]);
 }
 
 function ensureAudioCtx() {
@@ -118,13 +128,29 @@ function renderParentLi(item) {
   const { stamp } = parseRecordingName(item.name);
   const hasClips = item.clips && item.clips.length > 0;
   const star = item.starred ? "★" : "☆";
+  // Primary line: custom display name if set, else the parsed stamp.
+  // When a display_name is present, the parsed stamp drops to a small
+  // subtitle so the user keeps both anchors.
+  const primary = item.display_name || stamp;
+  const subtitleHtml = item.display_name
+      ? `<span class="filename">${escapeHtml(stamp)}</span>`
+      : "";
+  const metaParts = [];
+  if (bpm) metaParts.push(bpm);
+  metaParts.push(fmtBytes(item.size));
+  if (item.duration_sec) metaParts.push(fmtTime(item.duration_sec));
+  if (hasClips) {
+    metaParts.push(item.clips.length + " clip"
+                   + (item.clips.length === 1 ? "" : "s"));
+  }
   li.innerHTML = `
     <div class="row">
       <span class="caret" title="${hasClips ? 'expand clips' : ''}">${hasClips ? "▸" : "·"}</span>
       <span class="star" title="star">${star}</span>
       <span class="grow">
-        <span class="name">${stamp}</span>
-        <span class="meta">${bpm}${bpm ? " · " : ""}${fmtBytes(item.size)}${hasClips ? " · " + item.clips.length + " clip" + (item.clips.length === 1 ? "" : "s") : ""}</span>
+        <span class="name">${escapeHtml(primary)}</span>
+        ${subtitleHtml}
+        <span class="meta">${metaParts.join(" · ")}</span>
       </span>
     </div>`;
   const caret = li.querySelector(".caret");
@@ -158,13 +184,20 @@ function renderClipLi(clip, parent) {
   const label = clip.name.startsWith(parentStem + "_clip_")
               ? clip.name.slice((parentStem + "_clip_").length).replace(/\.wav$/, "")
               : clip.name;
+  const primary = clip.display_name || label;
+  const subtitleHtml = clip.display_name
+      ? `<span class="filename">${escapeHtml(label)}</span>`
+      : "";
+  const metaParts = [fmtBytes(clip.size)];
+  if (clip.duration_sec) metaParts.push(fmtTime(clip.duration_sec));
   cli.innerHTML = `
     <div class="row">
       <span class="caret"> </span>
       <span class="star">${star}</span>
       <span class="grow">
-        <span class="name">${label}</span>
-        <span class="meta">${fmtBytes(clip.size)}</span>
+        <span class="name">${escapeHtml(primary)}</span>
+        ${subtitleHtml}
+        <span class="meta">${metaParts.join(" · ")}</span>
       </span>
       <button class="export-clip" title="download clip">⬇</button>
     </div>`;
@@ -236,14 +269,19 @@ function triggerExport(name) {
 }
 
 // ---- Load + decode ------------------------------------------------------
+function buildFilenameLabel() {
+  if (!currentFile) return "No recording loaded";
+  if (currentFile.display_name) return currentFile.display_name;
+  if (currentFile.isClip || currentFile.name.endsWith(".wav")) {
+    return "clip · " + currentFile.name;
+  }
+  const { stamp, bpm } = parseRecordingName(currentFile.name);
+  return bpm ? `${stamp}  ·  ${bpm} bpm` : stamp;
+}
+
 async function loadRecording(item) {
   currentFile = item;
-  if (item.isClip || item.name.endsWith(".wav")) {
-    filenameEl.textContent = "clip · " + item.name;
-  } else {
-    const { stamp, bpm } = parseRecordingName(item.name);
-    filenameEl.textContent = bpm ? `${stamp}  ·  ${bpm} bpm` : stamp;
-  }
+  filenameEl.textContent = buildFilenameLabel();
   durationEl.textContent = "decoding…";
   setStatus("loading " + item.name);
   stopPlayback();
@@ -256,6 +294,9 @@ async function loadRecording(item) {
                  .then(r => r.arrayBuffer());
     audioBuffer = await audioCtx.decodeAudioData(ab);
     durationSec = audioBuffer.duration;
+    // Cache duration server-side so the file list can show it for every
+    // recording without each viewer having to decode the audio first.
+    reportDurationIfNeeded(item.name, durationSec, item.duration_sec);
   } catch (e) {
     setStatus("decode failed: " + e.message);
     durationEl.textContent = "decode failed";
@@ -292,6 +333,7 @@ async function loadRecording(item) {
   deleteBtn.disabled = false;
   exportBtn.disabled = false;
   addMarkerBtn.disabled = false;
+  renameBtn.disabled = false;
 
   resizeCanvases();
   redrawAll();
@@ -719,6 +761,44 @@ function writeStr(view, off, str) {
   for (let i = 0; i < str.length; i++) view.setUint8(off + i, str.charCodeAt(i));
 }
 
+// ---- Display name + duration -------------------------------------------
+async function reportDurationIfNeeded(name, sec, cached) {
+  // Skip if the server already has the duration within ~half a second
+  // (decoder vs. cached value sometimes disagree past the third decimal).
+  if (cached && Math.abs(cached - sec) < 0.5) return;
+  try {
+    await fetch("/api/duration?name=" + encodeURIComponent(name)
+                + "&seconds=" + encodeURIComponent(sec.toFixed(3)),
+                { method: "POST" });
+  } catch (e) {
+    console.warn("duration cache failed", e);
+  }
+}
+
+async function renameRecording() {
+  if (!currentFile) return;
+  const current = currentFile.display_name || "";
+  const next = prompt(
+      "Display name (blank to clear and fall back to the timestamp / clip range):",
+      current);
+  if (next === null) return;
+  try {
+    const res = await fetch("/api/rename?name=" + encodeURIComponent(currentFile.name)
+                            + "&display=" + encodeURIComponent(next),
+                            { method: "POST" });
+    if (!res.ok) throw new Error("server " + res.status);
+    const data = await res.json();
+    currentFile.display_name = data.display_name || null;
+    filenameEl.textContent = buildFilenameLabel();
+    setStatus(currentFile.display_name
+              ? ("renamed → " + currentFile.display_name)
+              : "display name cleared");
+    refreshFileList();
+  } catch (e) {
+    setStatus("rename failed: " + e.message);
+  }
+}
+
 // ---- Markers ------------------------------------------------------------
 async function persistMarkers() {
   if (!currentFile) return;
@@ -831,6 +911,7 @@ exportBtn.addEventListener("click", () => {
   if (currentFile) triggerExport(currentFile.name);
 });
 addMarkerBtn.addEventListener("click", addMarkerAtPlayhead);
+renameBtn.addEventListener("click", renameRecording);
 // Keyboard: 'm' drops a marker at the playhead, mirroring the watch's UP
 // button. Skip when typing in a prompt-style input.
 window.addEventListener("keydown", (e) => {
@@ -907,7 +988,7 @@ async function deleteRecording() {
     selection = null;
     // Disable buttons and reset the editor pane.
     [playBtn, playSelBtn, clearSelBtn, saveBtn, shareBtn, deleteBtn, exportBtn,
-     addMarkerBtn].forEach(b => b.disabled = true);
+     addMarkerBtn, renameBtn].forEach(b => b.disabled = true);
     markers = [];
     filenameEl.textContent = "No recording loaded";
     durationEl.textContent = "";
