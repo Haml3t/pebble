@@ -29,6 +29,8 @@
         { "type": "raw", "name": "WALL_STARTAN3", "file": "data/wall_startan3.bin" },
         { "type": "raw", "name": "TEX_NUKAGE1",   "file": "data/tex_nukage1.bin" },
         { "type": "raw", "name": "TEX_STEP1",     "file": "data/tex_step1.bin" },
+        { "type": "raw", "name": "TEX_FLOOR4_1",  "file": "data/tex_floor4_1.bin" },
+        { "type": "raw", "name": "TEX_CEIL3_5",   "file": "data/tex_ceil3_5.bin" },
         { "type": "raw", "name": "SPR_PISGA0",   "file": "data/spr_pisga0.bin" },
         { "type": "raw", "name": "SPR_PISFA0",   "file": "data/spr_pisfa0.bin" },
         { "type": "raw", "name": "SPR_POSSA1",   "file": "data/spr_possa1.bin" },

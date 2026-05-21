@@ -38,6 +38,59 @@ def doom_rgb_to_pebble64(r: int, g: int, b: int) -> int:
 TRANSPARENT_BYTE = 0x00
 
 
+def remap_walls_to_warm_palette(data: bytes, header_size: int = 4) -> bytes:
+    """Recolor every wall pixel into a 5-step warm-olive palette anchored
+    at the player-requested colors (0xC4 dark olive / 0xD4 mid olive /
+    0xE9 warm tan = lit). The 5 steps form a Manhattan-1 path in (R,G,B)
+    space so consecutive brightness levels look like a smooth gradient,
+    preserving the texture's vertical-panel detail from STARTAN3 etc.
+        sum 0-1 -> 0xC4  (R=0 G=1 B=0, dark olive)
+        sum 2-3 -> 0xD4  (R=1 G=1 B=0, olive)
+        sum 4-5 -> 0xD8  (R=1 G=2 B=0, lighter olive)
+        sum 6-7 -> 0xE8  (R=2 G=2 B=0, khaki / yellow)
+        sum 8-9 -> 0xE9  (R=2 G=2 B=1, warm tan, lit accents)"""
+    head = data[:header_size]
+    pixels = bytearray(data[header_size:])
+    for i, c in enumerate(pixels):
+        if c == TRANSPARENT_BYTE:
+            continue
+        r = (c >> 4) & 0x3
+        g = (c >> 2) & 0x3
+        b = c & 0x3
+        bright = r + g + b
+        if bright <= 1:    pixels[i] = 0xC4
+        elif bright <= 3:  pixels[i] = 0xD4
+        elif bright <= 5:  pixels[i] = 0xD8
+        elif bright <= 7:  pixels[i] = 0xE8
+        else:              pixels[i] = 0xE9
+    return head + bytes(pixels)
+
+
+def darken_pebble64_pixels(data: bytes, drop_r: bool = True,
+                           drop_g: bool = True,
+                           header_size: int = 4) -> bytes:
+    """Optionally knock R and/or G down by one quantum. Pebble64 has only
+    4 levels per channel, so this is a coarse adjustment, but we have two
+    knobs (drop_r, drop_g) which combined give a four-step ramp:
+        both off  = original brightness   (sprites, HUD)
+        drop_r    = R-only knock          (walls — "a little less dark")
+        drop_g    = G-only knock          (unused; would look magenta-tinted)
+        both on   = R+G knock             (floor + ceiling — atmospheric)
+    B is left alone in all cases — Doom's palette skews warm, so dropping
+    B would push everything toward cyan."""
+    head = data[:header_size]
+    pixels = bytearray(data[header_size:])
+    for i, c in enumerate(pixels):
+        if c == TRANSPARENT_BYTE:
+            continue
+        r = (c >> 4) & 0x3
+        g = (c >> 2) & 0x3
+        if drop_r and r > 0: r -= 1
+        if drop_g and g > 0: g -= 1
+        pixels[i] = (c & 0xC3) | (r << 4) | (g << 2)
+    return head + bytes(pixels)
+
+
 def read_wad_directory(wad_bytes: bytes):
     """Returns (magic, name -> (offset, size)) for all lumps."""
     magic, num_lumps, dir_offset = struct.unpack_from("<4sII", wad_bytes, 0)
@@ -269,6 +322,10 @@ def main() -> int:
         except SystemExit as e:
             print(f"  SKIP wall {name}: {e}")
             continue
+        # Walls are recolored to a 5-step warm-olive palette that
+        # preserves STARTAN3's vertical-panel texture detail while
+        # rotating the original dark-blue accents into warm tones.
+        data = remap_walls_to_warm_palette(data)
         out_path = args.out / f"wall_{name.lower()}.bin"
         out_path.write_bytes(data)
         total_resource_bytes += len(data)
@@ -283,6 +340,7 @@ def main() -> int:
         except SystemExit as e:
             print(f"  SKIP flat {name}: {e}")
             continue
+        data = darken_pebble64_pixels(data)
         out_path = args.out / f"tex_{name.lower()}.bin"
         out_path.write_bytes(data)
         total_resource_bytes += len(data)

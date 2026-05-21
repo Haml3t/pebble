@@ -25,12 +25,14 @@
 typedef enum {
   STAGE_TITLE = 0,   // splash on boot; SELECT enters play
   STAGE_PLAY,        // engine is ticking + rendering
+  STAGE_DEAD,        // player hp hit 0; "YOU DIED"; SELECT/BACK returns to title
 } stage_t;
 
 static const char *stage_name(stage_t s) {
   switch (s) {
     case STAGE_TITLE: return "TITLE";
     case STAGE_PLAY:  return "PLAY";
+    case STAGE_DEAD:  return "DEAD";
     default:          return "?";
   }
 }
@@ -49,7 +51,7 @@ static uint32_t s_last_perf_ms;
 // engine. SELECT fire is edge-triggered (cleared after each tick).
 static engine_input_t s_input;
 static bool s_select_edge;
-static int16_t s_accel_y;
+static int16_t s_accel_x;
 
 // Shadow buffer: SHADOW_W * SHADOW_H bytes (200*228 = 45,600). Static BSS
 // rather than heap-allocated — the size is fixed at compile time, and
@@ -101,10 +103,26 @@ static void draw_play(GContext *ctx, GRect b) {
   graphics_release_frame_buffer(ctx, fb);
 }
 
+static void draw_dead(GContext *ctx, GRect b) {
+  graphics_context_set_fill_color(ctx, GColorDarkCandyAppleRed);
+  graphics_fill_rect(ctx, b, 0, GCornerNone);
+  graphics_context_set_text_color(ctx, GColorWhite);
+  GFont big = fonts_get_system_font(FONT_KEY_GOTHIC_28_BOLD);
+  graphics_draw_text(ctx, "YOU", big, GRect(0, 50, b.size.w, 32),
+    GTextOverflowModeWordWrap, GTextAlignmentCenter, NULL);
+  graphics_draw_text(ctx, "DIED", big, GRect(0, 82, b.size.w, 32),
+    GTextOverflowModeWordWrap, GTextAlignmentCenter, NULL);
+  GFont small = fonts_get_system_font(FONT_KEY_GOTHIC_18);
+  graphics_draw_text(ctx, "BACK to retry", small,
+    GRect(0, 140, b.size.w, 22),
+    GTextOverflowModeWordWrap, GTextAlignmentCenter, NULL);
+}
+
 static void screen_update_proc(Layer *layer, GContext *ctx) {
   GRect b = layer_get_bounds(layer);
-  if (s_stage == STAGE_TITLE) draw_title(ctx, b);
-  else                        draw_play(ctx, b);
+  if (s_stage == STAGE_TITLE)      draw_title(ctx, b);
+  else if (s_stage == STAGE_DEAD)  draw_dead(ctx, b);
+  else                             draw_play(ctx, b);
 }
 
 // === Frame loop ===========================================================
@@ -146,9 +164,16 @@ static void frame_cb(void *unused) {
   if (s_stage == STAGE_PLAY) {
     s_input.fire = s_select_edge;
     s_select_edge = false;
-    s_input.accel_y = s_accel_y;
+    s_input.accel_x = s_accel_x;
     engine_tick(&s_input);
     engine_render(s_shadow);
+    // Death promotion happens after the tick so the final hp=0 frame
+    // still gets rendered (player sees the imp landing the last hit).
+    if (engine_player_dead()) {
+      engine_debug_t d; engine_get_debug(&d);
+      APP_LOG(APP_LOG_LEVEL_INFO, "player died, kills=%u", (unsigned)d.kills);
+      s_stage = STAGE_DEAD;
+    }
   }
   // Watchdog log: any render+tick that took >100ms is a serious stall and
   // a possible cause of system app-kill. Reporting these lets us notice
@@ -176,17 +201,15 @@ static void enter_play(void) {
 }
 
 static void btn_select_click(ClickRecognizerRef r, void *ctx) {
-  if (s_stage == STAGE_TITLE) {
-    enter_play();
-    return;
-  }
+  if (s_stage == STAGE_TITLE) { enter_play(); return; }
+  if (s_stage == STAGE_DEAD)  { enter_play(); return; }
   // In play: fire is edge-triggered; held-fire is fine because rapid
   // re-clicks still set the edge each frame.
   s_select_edge = true;
 }
 
 static void btn_back_click(ClickRecognizerRef r, void *ctx) {
-  if (s_stage == STAGE_PLAY) {
+  if (s_stage == STAGE_PLAY || s_stage == STAGE_DEAD) {
     s_stage = STAGE_TITLE;
     s_title_enter_ms = now_ms();
     return;
@@ -228,7 +251,7 @@ static void click_config_provider(void *ctx) {
 
 static void accel_handler(AccelData *data, uint32_t num_samples) {
   if (num_samples == 0) return;
-  s_accel_y = data[num_samples - 1].y;
+  s_accel_x = data[num_samples - 1].x;
 }
 
 // === Window lifecycle =====================================================

@@ -81,6 +81,18 @@ static inline float lut_cos(float a) { return s_cos_lut[angle_to_lut_idx(a)]; }
 #define FOV_RAD      1.047f     // 60° horizontal FOV (Doom's classic)
 #define MAX_RAY_STEPS 24        // far-clip; tilemap is 32 wide so plenty
 
+// Imp AI tunables
+#define IMP_MOVE_SPEED          0.03f   // half player speed
+#define IMP_ATTACK_RANGE        1.5f    // tiles
+#define IMP_ATTACK_COOLDOWN     25      // frames between an imp's attacks (~1.25s at 50ms)
+#define IMP_DAMAGE              8       // HP per hit
+#define PLAYER_MAX_HEALTH       100
+#define DAMAGE_FLASH_FRAMES     3       // ~150ms red overlay after a hit
+                                        // (was 6 — but the overlay was too
+                                        // aggressive and obliterated wall
+                                        // texture detail; player couldn't see
+                                        // the world while taking damage)
+
 // === Hardcoded v0 tilemap (E1M1 starting room quote) =====================
 //
 // 32x32 grid. Each byte is a tex_id_t; 0 = empty space, others are wall
@@ -88,41 +100,38 @@ static inline float lut_cos(float a) { return s_cos_lut[angle_to_lut_idx(a)]; }
 // opens into a small corridor. Quotes E1M1's "hangar" feel.
 
 static const uint8_t s_tilemap[TILEMAP_H][TILEMAP_W] = {
-  /* y=0 (north) */
-  {0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0},
-  {0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0},
-  {0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0},
-  {0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0},
-  {0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0},
-  {0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0},
-  {0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0},
-  {0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0},
-  /* y=8: top wall of starting room */
-  {0,0,0,0,0,0,0,0,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,0,0,0},
-  {0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0},
-  {0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0},
-  {0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,2,2,0,0,0,0,0,0,0,0,0,0,1,0,0,0},
-  {0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,2,2,0,0,0,0,0,0,0,0,0,0,1,0,0,0},
-  {0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0},
-  {0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0},
-  {0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0},
-  /* y=16: bottom wall of starting room, with south doorway at x=18..19 */
-  {0,0,0,0,0,0,0,0,1,1,1,1,1,1,1,1,1,1,0,0,1,1,1,1,1,1,1,1,1,0,0,0},
-  {0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,3,3,0,0,0,0,0,0,0,0,0,0,0,0},
-  {0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,3,3,0,0,0,0,0,0,0,0,0,0,0,0},
-  {0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,3,3,0,0,0,0,0,0,0,0,0,0,0,0},
-  {0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,3,3,0,0,0,0,0,0,0,0,0,0,0,0},
-  {0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,3,3,0,0,0,0,0,0,0,0,0,0,0,0},
-  {0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0},
-  {0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0},
-  {0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0},
-  {0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0},
-  {0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0},
-  {0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0},
-  {0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0},
-  {0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0},
-  {0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0},
-  {0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0},
+/*y= 0*/ {0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0},
+/*y= 1*/ {0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0},
+/*y= 2*/ {0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0},
+/*y= 3*/ {0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0},
+/*y= 4*/ {0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0},
+/*y= 5*/ {0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0},
+/*y= 6*/ {0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0},
+/*y= 7*/ {0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0},
+/*y= 8 Room A north wall  */ {0,0,0,0,0,0,0,0,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,0,0,0},
+/*y= 9 Room A interior     */ {0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0},
+/*y=10                      */ {0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0},
+/*y=11                      */ {0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0},
+/*y=12 (player at x=18.5)   */ {0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0},
+/*y=13                      */ {0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0},
+/*y=14                      */ {0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0},
+/*y=15                      */ {0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0},
+/*y=16 Room A south wall    */ {0,0,0,0,0,0,0,0,1,1,1,1,1,1,1,1,1,1,0,0,1,1,1,1,1,1,1,1,1,0,0,0},
+/*y=17 corridor +pillars    */ {0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,3,0,0,3,1,0,0,0,0,0,0,0,0,0,0},
+/*y=18                      */ {0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,0,1,0,0,0,0,0,0,0,0,0,0},
+/*y=19                      */ {0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,0,1,0,0,0,0,0,0,0,0,0,0},
+/*y=20                      */ {0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,0,1,0,0,0,0,0,0,0,0,0,0},
+/*y=21                      */ {0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,3,0,0,3,1,0,0,0,0,0,0,0,0,0,0},
+/*y=22 Room B north wall    */ {0,0,0,0,0,0,0,0,0,0,0,0,1,1,1,1,1,1,0,0,1,1,1,1,1,0,0,0,0,0,0,0},
+/*y=23 Room B interior      */ {0,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0},
+/*y=24                      */ {0,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0},
+/*y=25  NUKAGE pit          */ {0,0,0,0,0,0,0,0,0,0,0,0,1,0,0,2,2,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0},
+/*y=26  NUKAGE pit          */ {0,0,0,0,0,0,0,0,0,0,0,0,1,0,0,2,2,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0},
+/*y=27                      */ {0,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0},
+/*y=28                      */ {0,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0},
+/*y=29 Room B south wall    */ {0,0,0,0,0,0,0,0,0,0,0,0,1,1,1,1,1,1,1,1,1,1,1,1,1,0,0,0,0,0,0,0},
+/*y=30                      */ {0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0},
+/*y=31                      */ {0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0},
 };
 
 // === Textures (loaded from Pebble resources at init) =====================
@@ -215,6 +224,7 @@ typedef struct {
   float x, y;
   sprite_kind_t kind;
   bool alive;
+  uint8_t attack_cooldown;   // frames until this imp can hit the player again
 } entity_t;
 
 #define MAX_ENTITIES 8
@@ -222,10 +232,16 @@ static entity_t s_entities[MAX_ENTITIES];
 
 static void entities_init(void) {
   memset(s_entities, 0, sizeof(s_entities));
-  // Imp directly south of player so it appears centered in initial view.
-  s_entities[0] = (entity_t){ .x = 18.5f, .y = 14.5f, .kind = SPR_IMP, .alive = true };
-  // Second one further south past the doorway — tests depth-scaling.
-  s_entities[1] = (entity_t){ .x = 19.5f, .y = 19.0f, .kind = SPR_IMP, .alive = true };
+  // Imp 1: south end of starting room. Closer to the doorway than to the
+  // player so you have ~3 seconds before it closes to attack range.
+  s_entities[0] = (entity_t){ .x = 18.5f, .y = 15.5f, .kind = SPR_IMP, .alive = true };
+  // Imp 2: in the corridor between the STEP1 pillars. Visible from spawn
+  // through the doorway — distance-scaled small, gets bigger as you walk.
+  s_entities[1] = (entity_t){ .x = 18.5f, .y = 20.0f, .kind = SPR_IMP, .alive = true };
+  // Imp 3: east side of room B, past the corridor exit.
+  s_entities[2] = (entity_t){ .x = 20.5f, .y = 26.0f, .kind = SPR_IMP, .alive = true };
+  // Imp 4: west side of room B, behind the NUKAGE pit.
+  s_entities[3] = (entity_t){ .x = 14.0f, .y = 27.5f, .kind = SPR_IMP, .alive = true };
 }
 
 // Column z-buffer: perpendicular wall distance per column. Walls write
@@ -237,6 +253,8 @@ static const uint32_t s_tex_resource_ids[TEX_COUNT] = {
   RESOURCE_ID_WALL_STARTAN3,
   RESOURCE_ID_TEX_NUKAGE1,
   RESOURCE_ID_TEX_STEP1,
+  RESOURCE_ID_TEX_FLOOR4_1,       // TEX_FLOOR
+  RESOURCE_ID_TEX_CEIL3_5,        // TEX_CEIL
 };
 
 static void load_textures(void) {
@@ -275,13 +293,32 @@ static void load_textures(void) {
 
 // === Player ==============================================================
 
+// Direction of the most recent hit, relative to where the player was
+// looking when they took the damage. Used by the directional damage
+// indicator (chevron at the viewport edge) — and only updated when an
+// imp actually lands a hit, NOT on every frame, so the indicator is a
+// stable post-hit warning rather than a continuous radar.
+typedef enum {
+  DMG_DIR_NONE = 0,
+  DMG_DIR_FRONT,
+  DMG_DIR_LEFT,
+  DMG_DIR_RIGHT,
+  DMG_DIR_BEHIND,
+} damage_dir_t;
+
+#define DAMAGE_INDICATOR_FRAMES 20   // ~1s at 50ms/frame
+
 typedef struct {
   float x, y;        // world coordinates in tiles (player size 0, point-like)
   float angle;       // radians, 0 = +x axis (east)
   int16_t turn_baseline;  // accel-Y baseline for drift correction
   uint16_t turn_baseline_age_ticks;
-  uint16_t fire_flash_ticks;  // remaining frames of muzzle-flash sprite
-  uint16_t kills;             // bumped on each successful imp kill
+  uint16_t fire_flash_ticks;     // remaining frames of muzzle-flash sprite
+  uint16_t kills;                // bumped on each successful imp kill
+  uint8_t  health;               // 0..PLAYER_MAX_HEALTH
+  uint8_t  damage_flash_ticks;   // remaining frames of red-tint overlay
+  uint8_t  damage_indicator_ticks;  // separate from flash — longer lifetime
+  damage_dir_t damage_dir;
 } player_t;
 
 #define FIRE_FLASH_FRAMES 5      // ~250ms at 50ms/frame; longer than v0's 3
@@ -298,7 +335,15 @@ static void player_init(void) {
   s_player.angle = (float)M_PI_2;   // +y is south on the tilemap
   s_player.turn_baseline = 0;
   s_player.turn_baseline_age_ticks = 0;
+  s_player.fire_flash_ticks = 0;
+  s_player.kills = 0;
+  s_player.health = PLAYER_MAX_HEALTH;
+  s_player.damage_flash_ticks = 0;
+  s_player.damage_indicator_ticks = 0;
+  s_player.damage_dir = DMG_DIR_NONE;
 }
+
+bool engine_player_dead(void) { return s_player.health == 0; }
 
 static inline bool is_wall(int mx, int my) {
   if (mx < 0 || my < 0 || mx >= TILEMAP_W || my >= TILEMAP_H) return true;
@@ -362,6 +407,13 @@ static int hitscan(void) {
 }
 
 void engine_tick(const engine_input_t *in) {
+  // If the player is already dead, freeze the world entirely — main.c is
+  // about to flip to STAGE_DEAD on its next frame_cb anyway.
+  if (s_player.health == 0) {
+    if (s_player.damage_flash_ticks > 0) s_player.damage_flash_ticks--;
+    return;
+  }
+
   // Fire: if SELECT this frame, swap pistol to muzzle-flash for N frames
   // and run hitscan. Closest imp in cone dies on hit.
   if (in->fire && s_player.fire_flash_ticks == 0) {
@@ -377,10 +429,83 @@ void engine_tick(const engine_input_t *in) {
     }
   }
   if (s_player.fire_flash_ticks > 0) s_player.fire_flash_ticks--;
+  if (s_player.damage_flash_ticks > 0) s_player.damage_flash_ticks--;
+  if (s_player.damage_indicator_ticks > 0) s_player.damage_indicator_ticks--;
+
+  // === Imp AI ============================================================
+  //
+  // Per imp:
+  //   1. Compute (dx, dy) toward player.
+  //   2. If within IMP_ATTACK_RANGE: attack if cooldown=0; else just sit
+  //      there counting down.
+  //   3. Otherwise: step toward player. Use L1 normalization (adx + ady)
+  //      instead of sqrtf — sqrt isn't on the libc blocklist like trig is,
+  //      but the L1 path is just as good for chasing and side-steps any
+  //      future softfloat surprise. Walls clip movement axis-by-axis the
+  //      same way they do for the player.
+  for (int i = 0; i < MAX_ENTITIES; i++) {
+    entity_t *e = &s_entities[i];
+    if (!e->alive) continue;
+    if (e->kind != SPR_IMP) continue;
+    if (e->attack_cooldown > 0) e->attack_cooldown--;
+
+    // Vector FROM player TO imp (matches sprite renderer convention so
+    // cam_y > 0 means "imp is in front", cam_y < 0 means "behind", and
+    // cam_x has the same sign as the screen-x where the imp would render.
+    // Earlier this code used the opposite sign convention, which inverted
+    // front/back AND made me add a fake left/right swap to compensate.)
+    float dx = e->x - s_player.x;
+    float dy = e->y - s_player.y;
+    float dist2 = dx * dx + dy * dy;
+    if (dist2 < IMP_ATTACK_RANGE * IMP_ATTACK_RANGE) {
+      if (e->attack_cooldown == 0) {
+        uint8_t dmg = IMP_DAMAGE;
+        if (s_player.health > dmg) s_player.health -= dmg;
+        else                       s_player.health  = 0;
+        s_player.damage_flash_ticks = DAMAGE_FLASH_FRAMES;
+        e->attack_cooldown = IMP_ATTACK_COOLDOWN;
+        // Classify hit direction into a 90° quadrant.
+        float pa = sanitize_angle(s_player.angle);
+        float c_pa = lut_cos(pa), s_pa = lut_sin(pa);
+        float cam_y =  c_pa * dx + s_pa * dy;
+        float cam_x = -s_pa * dx + c_pa * dy;
+        float acx = cam_x < 0 ? -cam_x : cam_x;
+        float acy = cam_y < 0 ? -cam_y : cam_y;
+        if (acy >= acx) {
+          s_player.damage_dir = (cam_y > 0) ? DMG_DIR_FRONT : DMG_DIR_BEHIND;
+        } else {
+          // cam_x > 0 → imp on player's left (in screen-space, sprite
+          // renders left of center). That's literally how the sprite
+          // renderer below classifies it; no fudge factor needed once
+          // dx/dy are in the same convention.
+          s_player.damage_dir = (cam_x > 0) ? DMG_DIR_LEFT : DMG_DIR_RIGHT;
+        }
+        s_player.damage_indicator_ticks = DAMAGE_INDICATOR_FRAMES;
+        APP_LOG(APP_LOG_LEVEL_INFO,
+                "imp=%d attack -> hp=%u dir=%d",
+                i, (unsigned)s_player.health, (int)s_player.damage_dir);
+      }
+    } else {
+      // Chase: step toward player. dx/dy is now imp-minus-player so to
+      // approach the player we move in the OPPOSITE direction (subtract).
+      // (Was add when dx/dy was player-minus-imp; the direction-classify
+      // fix flipped the convention.)
+      float adx = dx < 0 ? -dx : dx;
+      float ady = dy < 0 ? -dy : dy;
+      float total = adx + ady;
+      if (total > 0.01f) {
+        float k = IMP_MOVE_SPEED / total;
+        float nx = e->x - dx * k;
+        float ny = e->y - dy * k;
+        if (!is_wall((int)nx, (int)e->y)) e->x = nx;
+        if (!is_wall((int)e->x, (int)ny)) e->y = ny;
+      }
+    }
+  }
 
   // Turning: drift-corrected accel-Y. Baseline is rolling — if accel stays
   // near zero for ~1.5s we re-baseline (player repositioned their wrist).
-  int dy = in->accel_y - s_player.turn_baseline;
+  int dy = in->accel_x - s_player.turn_baseline;
   // Clamp accel-driven turn input to ±2000 mg before scaling. The raw accel
   // sensor can briefly spike to ±16000+ on a hard wrist-whip; without this
   // clamp dy*TURN_GAIN can overshoot 2π/frame and trigger the libc trig
@@ -390,7 +515,7 @@ void engine_tick(const engine_input_t *in) {
   if (abs(dy) < TURN_DEADZONE_MG) {
     s_player.turn_baseline_age_ticks++;
     if (s_player.turn_baseline_age_ticks > 30) {
-      s_player.turn_baseline = in->accel_y;
+      s_player.turn_baseline = in->accel_x;
       s_player.turn_baseline_age_ticks = 0;
     }
   } else {
@@ -439,8 +564,8 @@ void engine_render(uint8_t *out) {
   for (int y = VIEWPORT_H / 2; y < VIEWPORT_H; y++)
     memset(out + y * VIEWPORT_W, FLOOR_COLOR, VIEWPORT_W);
 
-  // DDA raycaster. Classic textbook: for each column compute a ray direction
-  // and step the grid until we hit a wall, then draw a texture-scaled column.
+  // Hoist player position + trig: needed by floor/ceiling block above and
+  // by the wall loop below. Sanitize angle once before any trig lookup.
   const float px = s_player.x, py = s_player.y;
   const float pa = sanitize_angle(s_player.angle);
   // Cache sin/cos once per frame. We use the precomputed LUT instead of
@@ -448,6 +573,78 @@ void engine_render(uint8_t *out) {
   // softfloat path. ~0.7° resolution — invisible at our column count.
   const float cos_pa_w = lut_cos(pa);
   const float sin_pa_w = lut_sin(pa);
+
+  // === Floor + Ceiling textured span pass ================================
+  {
+    texture_t *floor_tex = &s_textures[TEX_FLOOR];
+    texture_t *ceil_tex  = &s_textures[TEX_CEIL];
+    if (floor_tex->pixels && ceil_tex->pixels) {
+      // Ray dir at leftmost (camera_x=-1) and rightmost (camera_x=+1) cols.
+      // forward = (cos pa, sin pa); right = (-sin pa, cos pa).
+      // ray_dir_left  = forward - right * fov_half_tan
+      // ray_dir_right = forward + right * fov_half_tan
+      static const float fov_half_tan = 0.5773502692f;
+      float left_dx  = cos_pa_w + sin_pa_w * fov_half_tan;
+      float left_dy  = sin_pa_w - cos_pa_w * fov_half_tan;
+      float right_dx = cos_pa_w - sin_pa_w * fov_half_tan;
+      float right_dy = sin_pa_w + cos_pa_w * fov_half_tan;
+
+      const int half_h = VIEWPORT_H / 2;
+      const int fw = floor_tex->w, ch = ceil_tex->w;
+      // 64-power-of-two assumption: masks for cheap modulo
+      const uint32_t fw_mask = floor_tex->w - 1;
+      const uint32_t fh_mask = floor_tex->h - 1;
+      const uint32_t cw_mask = ceil_tex->w - 1;
+      const uint32_t chh_mask = ceil_tex->h - 1;
+
+      // For each row below horizon, compute the floor world-x/y at the
+      // leftmost column, then step right by (right - left) / W per pixel.
+      // Player camera "eye height" = 0.5 tile -> row_distance = 0.5*H/(y-H/2)
+      for (int y = half_h + 1; y < VIEWPORT_H; y++) {
+        float row_dist = 0.5f * (float)VIEWPORT_H / (float)(y - half_h);
+        // Floor world position at left/right edge of screen at this depth.
+        float wx_left  = px + row_dist * left_dx;
+        float wy_left  = py + row_dist * left_dy;
+        float wx_right = px + row_dist * right_dx;
+        float wy_right = py + row_dist * right_dy;
+        float step_x = (wx_right - wx_left) / (float)VIEWPORT_W;
+        float step_y = (wy_right - wy_left) / (float)VIEWPORT_W;
+        // Convert to Q16 fixed-point so the per-pixel inner loop is integer.
+        // Texture coords scale by tex.w (64); multiply once.
+        int32_t fx = (int32_t)(wx_left * fw) << 16 >> 16;  // sign-preserve
+        // Actually we want world*fw in Q16, so:
+        int32_t tx_fx = (int32_t)(wx_left * (float)fw * 65536.0f);
+        int32_t ty_fx = (int32_t)(wy_left * (float)fw * 65536.0f);
+        int32_t dtx_fx = (int32_t)(step_x * (float)fw * 65536.0f);
+        int32_t dty_fx = (int32_t)(step_y * (float)fw * 65536.0f);
+        (void)fx;
+
+        uint8_t *floor_row = out + y * SHADOW_W;
+        uint8_t *ceil_row  = out + (VIEWPORT_H - 1 - y) * SHADOW_W;
+        for (int x = 0; x < VIEWPORT_W; x++) {
+          uint32_t u = ((uint32_t)tx_fx >> 16) & fw_mask;
+          uint32_t v = ((uint32_t)ty_fx >> 16) & fh_mask;
+          floor_row[x] = floor_tex->pixels[v * floor_tex->w + u];
+          // Ceiling uses the same UV (symmetric horizon), different texture.
+          uint32_t cu = u & cw_mask;
+          uint32_t cv = v & chh_mask;
+          ceil_row[x] = ceil_tex->pixels[cv * ceil_tex->w + cu];
+          tx_fx += dtx_fx;
+          ty_fx += dty_fx;
+        }
+      }
+      // Horizon line (row half_h) — paint with the floor's row=0 texel as
+      // a thin seam between floor + ceiling rather than leaving uninited.
+      memset(out + half_h * SHADOW_W,
+             floor_tex->pixels[0], SHADOW_W);
+    } else {
+      // Defensive fallback if resources didn't load: solid Doom-brown.
+      for (int y = 0; y < VIEWPORT_H / 2; y++)
+        memset(out + y * SHADOW_W, 0xC4, SHADOW_W);
+      for (int y = VIEWPORT_H / 2; y < VIEWPORT_H; y++)
+        memset(out + y * SHADOW_W, 0xE4, SHADOW_W);
+    }
+  }
   // tanf(constant) is itself a constant once optimized; but the compiler
   // doesn't always fold it, and tanf can be expensive. Hoist explicitly.
   static const float fov_half_tan = 0.5773502692f;   // tan(60°/2) = tan(π/6)
@@ -636,6 +833,32 @@ void engine_render(uint8_t *out) {
     }
   }
 
+  // === Damage flash ======================================================
+  //
+  // For a few frames after an imp lands a hit, bump every viewport pixel's
+  // R channel UP by one quantum (saturating at 3). That preserves the
+  // texture's character — walls still look like olive panels, sprites
+  // still readable — while adding a clear "you got hit" red wash.
+  // Earlier we forced R=3 which obliterated the palette; visually it read
+  // as "back to original blank lighter colors" because the whole viewport
+  // turned pinkish-pale.
+  if (s_player.damage_flash_ticks > 0) {
+    for (int y = 0; y < VIEWPORT_H; y++) {
+      uint8_t *row = out + y * SHADOW_W;
+      for (int x = 0; x < VIEWPORT_W; x++) {
+        uint8_t c = row[x];
+        uint8_t r = (c >> 4) & 0x3;
+        if (r < 3) r++;
+        row[x] = (c & 0xCF) | (r << 4);
+      }
+    }
+  }
+
+  // (Directional damage indicator is rendered AFTER the HUD pistol below.
+  //  Reason: the BEHIND chevron sits at the bottom of the viewport and the
+  //  pistol overlay was overpainting it; drawing chevrons last makes them
+  //  the topmost visual layer, always visible.)
+
   // === HUD weapon overlay ================================================
   //
   // The player's pistol is drawn as a static sprite anchored to the bottom
@@ -663,6 +886,66 @@ void engine_render(uint8_t *out) {
         uint8_t c = src[x];
         if (c != TRANSPARENT_BYTE) dst[x] = c;
       }
+    }
+  }
+
+  // === Directional damage indicator =====================================
+  //
+  // Single red chevron at the viewport edge pointing toward where the last
+  // hit came from (in camera-relative terms — "to your left" means left
+  // edge, regardless of world coords). Lasts ~1 second; longer than the
+  // damage flash because the flash is "you got hit" but the chevron is
+  // "look this way to find the threat".
+  //
+  // Drawn AFTER the HUD pistol so the bottom-edge BEHIND chevron isn't
+  // overpainted by the pistol sprite. Left/Right chevrons don't overlap
+  // the pistol but we render them here too for consistency.
+  if (s_player.damage_indicator_ticks > 0
+      && s_player.damage_dir != DMG_DIR_NONE
+      && s_player.damage_dir != DMG_DIR_FRONT) {
+    const uint8_t CHEV_COLOR = 0xF0;   // R=3 G=0 B=0, pure red
+    const int cy = VIEWPORT_H / 2;
+    const int cx = VIEWPORT_W / 2;
+    const int len = 30;
+    const int thk = 22;
+    switch (s_player.damage_dir) {
+      case DMG_DIR_LEFT:
+        for (int dx_ = 0; dx_ < thk; dx_++) {
+          int half = (thk - dx_) * (len / 2) / thk;
+          for (int dy_ = -half; dy_ <= half; dy_++) {
+            int yy = cy + dy_;
+            if (yy < 0 || yy >= VIEWPORT_H) continue;
+            out[yy * SHADOW_W + dx_] = CHEV_COLOR;
+          }
+        }
+        break;
+      case DMG_DIR_RIGHT:
+        for (int dx_ = 0; dx_ < thk; dx_++) {
+          int half = (thk - dx_) * (len / 2) / thk;
+          for (int dy_ = -half; dy_ <= half; dy_++) {
+            int yy = cy + dy_;
+            int xx = VIEWPORT_W - 1 - dx_;
+            if (yy < 0 || yy >= VIEWPORT_H) continue;
+            if (xx < 0 || xx >= VIEWPORT_W) continue;
+            out[yy * SHADOW_W + xx] = CHEV_COLOR;
+          }
+        }
+        break;
+      case DMG_DIR_BEHIND:
+        // Chevron at bottom edge of viewport, pointing down. Drawn on top
+        // of the pistol HUD so the player can see it even if it overlaps.
+        for (int dy_ = 0; dy_ < thk; dy_++) {
+          int half = (thk - dy_) * (len / 2) / thk;
+          for (int dx_ = -half; dx_ <= half; dx_++) {
+            int xx = cx + dx_;
+            int yy = VIEWPORT_H - 1 - dy_;
+            if (xx < 0 || xx >= VIEWPORT_W) continue;
+            if (yy < 0 || yy >= VIEWPORT_H) continue;
+            out[yy * SHADOW_W + xx] = CHEV_COLOR;
+          }
+        }
+        break;
+      default: break;
     }
   }
 
@@ -715,10 +998,9 @@ void engine_render(uint8_t *out) {
     DRAW_SPRITE_TO_HUD(SPR_FACE, fx, fy);
   }
 
-  // Placeholder values: health=100 on left, ammo=50 on right. Numerals
-  // are drawn right-aligned (Doom convention). STTNUM* digits are ~14px
-  // wide each.
-  static const uint8_t hp = 100, ammo = 50;
+  // HP from real player state on the left. Ammo is still a placeholder
+  // for v0 (we don't track ammo consumption yet — pistol is infinite).
+  uint8_t hp = s_player.health, ammo = 50;
   static const sprite_kind_t s_digit_kinds[10] = {
     SPR_NUM0, SPR_NUM1, SPR_NUM2, SPR_NUM3, SPR_NUM4,
     SPR_NUM5, SPR_NUM6, SPR_NUM7, SPR_NUM8, SPR_NUM9,
@@ -754,6 +1036,8 @@ void engine_render(uint8_t *out) {
   s_debug.player_y_q8 = (int)(s_player.y * 256);
   s_debug.player_angle_deg = (int)(s_player.angle * 57.2958f) % 360;
   s_debug.current_tile = s_tilemap[(int)s_player.y][(int)s_player.x];
+  s_debug.player_health = s_player.health;
+  s_debug.kills = (uint8_t)s_player.kills;
 }
 
 void engine_get_debug(engine_debug_t *out) { *out = s_debug; }

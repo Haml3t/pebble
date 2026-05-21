@@ -29,6 +29,8 @@ typedef enum {
   TEX_STARTAN3,    // primary wall texture (128x128 composite, real E1M1 wall)
   TEX_NUKAGE1,     // green liquid (used for interior decoration walls)
   TEX_STEP1,       // gray step (used for doorway pillars)
+  TEX_FLOOR,       // floor flat (FLOOR4_1, 64x64) — drawn under the horizon
+  TEX_CEIL,        // ceiling flat (CEIL3_5, 64x64) — drawn above the horizon
   TEX_COUNT
 } tex_id_t;
 
@@ -37,7 +39,11 @@ typedef struct {
   bool up_held;       // continuous walk forward
   bool down_held;     // continuous walk back
   bool back_held;     // strafe modifier
-  int16_t accel_y;    // raw accel Y; engine integrates into turn rate
+  // raw accel X-axis = side-to-side wrist roll. Engine integrates this
+  // into the turn rate (left tilt -> turn left, right tilt -> turn right).
+  // The previous version used Y (pitch), which the player kept hitting
+  // while reaching to press buttons — felt jittery and unintentional.
+  int16_t accel_x;
 } engine_input_t;
 
 void engine_init(void);
@@ -56,6 +62,12 @@ typedef struct {
   int player_y_q8;
   int player_angle_deg;
   uint8_t current_tile;
+  uint8_t player_health;
+  uint8_t kills;
   uint16_t last_render_us;
 } engine_debug_t;
 void engine_get_debug(engine_debug_t *out);
+
+// Player health checks. main.c polls this to drive the STAGE_DEAD UI;
+// it doesn't otherwise need to know the engine's internal state.
+bool engine_player_dead(void);
