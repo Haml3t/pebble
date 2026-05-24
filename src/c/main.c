@@ -4,10 +4,10 @@
 // HR background period used when s_hr_live=false: the watchface samples at
 // this cadence by default, and bursts to 1Hz for HR_BURST_MS on any accel-
 // tap event (wrist flick or screen tap — same signal that wakes the
-// backlight). 60s is the slowest cadence that still gives a fresh-feeling
-// reading when the user glances at the watch (since the burst will refresh
-// it within ~1s anyway).
-#define HR_BACKGROUND_PERIOD_S 60
+// backlight). The user-visible freshness comes from the burst (refreshes
+// within ~1s of a glance), so this value is tuned purely for battery —
+// 300s nearly doubles battery life vs 60s (8.4 vs 4.4 projected days).
+#define HR_BACKGROUND_PERIOD_S 300
 #define HR_BURST_MS (30 * 1000)
 
 // === EXPERIMENT: HR-compare logging (experiments/hr-compare/) =============
