@@ -98,7 +98,14 @@ function refreshGoogleToken(cb) {
     try {
       var data = JSON.parse(xhr.responseText);
       if (data.error) {
-        reportCalError('oauth ' + (data.error_description || data.error));
+        // invalid_grant = refresh token rejected (revoked, expired after the
+        // 7-day Testing-mode TTL, password rotated, etc.). The raw Google
+        // message is "Token has been expired or revoked." which truncates
+        // mid-word on the watch — replace with an actionable string.
+        var msg = data.error === 'invalid_grant'
+          ? 'auth expired - re-auth on phone'
+          : 'oauth ' + (data.error_description || data.error);
+        reportCalError(msg);
         cb(null); return;
       }
       if (!data.access_token) {
@@ -204,6 +211,11 @@ function fetchNextCalendarEvent() {
                 event.start.dateTime || event.start.date);
             var startStr = event.start.dateTime || event.start.date;
             var ts = new Date(startStr).getTime();
+            // TODO: filter out in-progress events. Google's timeMin filters
+            // by an event's END time, so an event that started before now
+            // but ends after now IS returned; its earlier startTime then
+            // wins the orderBy sort and the widget shows the in-progress
+            // event instead of the next future one. Fix: skip when ts <= now.
             if (ts < bestTs) { bestTs = ts; bestEvent = event; }
           } else {
             log('cal-event', cal.name, '(none in lookahead)');
@@ -249,6 +261,24 @@ function emitBestEvent(event) {
 function refreshAll() {
   fetchWeather();
   fetchNextCalendarEvent();
+}
+
+// Belt-and-suspenders throttle for tick-driven refreshes. The watchapp's
+// tick_handler already gates REQUEST_REFRESH to every Nth minute, but a
+// flurry of watchapp restarts each fires its own request_refresh from
+// init(), and we don't want each restart to trigger a full cal+weather
+// fetch. 4 min < watch gate of 5 min so legitimate periodic refreshes
+// still pass. Bypassed by startup/config-change/recovery paths below.
+var REFRESH_THROTTLE_MS = 4 * 60 * 1000;
+var lastRefreshAllMs = 0;
+function refreshAllThrottled() {
+  var now = Date.now();
+  if (now - lastRefreshAllMs >= REFRESH_THROTTLE_MS) {
+    lastRefreshAllMs = now;
+    refreshAll();
+  } else {
+    log('refresh throttled (' + Math.round((now - lastRefreshAllMs)/1000) + 's since last)');
+  }
 }
 
 // Mirror our STORAGE keys into Clay's own settings store so the settings
@@ -299,7 +329,7 @@ Pebble.addEventListener('ready', function () {
 
 Pebble.addEventListener('appmessage', function (e) {
   if (!e || !e.payload) return;
-  if (e.payload.REQUEST_REFRESH) refreshAll();
+  if (e.payload.REQUEST_REFRESH) refreshAllThrottled();
 
   var filled = false;
   filled = applyRecovered(e.payload, 'CFG_WEATHER_KEY',

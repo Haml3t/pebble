@@ -10,6 +10,12 @@
 #define HR_BACKGROUND_PERIOD_S 300
 #define HR_BURST_MS (30 * 1000)
 
+// Cal+weather poll cadence in MINUTE_UNIT ticks. tick_handler gates
+// request_refresh() so PKJS fetches don't fire every minute. on-watch
+// HR display still updates every minute via update_heart_rate() above
+// the gate (needed for the stale-HR "--" check).
+#define REFRESH_PERIOD_MIN 5
+
 // === EXPERIMENT: HR-compare logging (experiments/hr-compare/) =============
 // Emits "HRCMP <unix_ts> <bpm>" lines to APP_LOG so the experiment scripts
 // can parse the watch's HR stream out of `pebble logs`. Set to 0 to disable;
@@ -524,7 +530,11 @@ static void request_refresh(void) {
 static void tick_handler(struct tm *tick_time, TimeUnits units_changed) {
   update_heart_rate();
   if (units_changed & MINUTE_UNIT) {
-    request_refresh();
+    static int min_counter = 0;
+    if (++min_counter >= REFRESH_PERIOD_MIN) {
+      min_counter = 0;
+      request_refresh();
+    }
   }
 }
 
