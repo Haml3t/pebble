@@ -1,7 +1,8 @@
 {
   "name": "does-it-doom",
   "author": "David Sugarman",
-  "version": "0.0.0",
+  "version": "0.1.0",
+  "description": "Doom on your wrist. Walks, shoots, imps die. A raycaster homage to E1M1 — not the real BSP engine.",
   "keywords": [
     "pebble-app"
   ],
@@ -24,6 +25,7 @@
     ],
     "resources": {
       "media": [
+        { "type": "bitmap", "name": "MENU_ICON",  "file": "images/menu-icon.png", "menuIcon": true },
         { "type": "raw", "name": "PLAYPAL",       "file": "data/playpal.bin" },
         { "type": "raw", "name": "TRIG_LUT",      "file": "data/trig_lut.bin" },
         { "type": "raw", "name": "WALL_STARTAN3", "file": "data/wall_startan3.bin" },

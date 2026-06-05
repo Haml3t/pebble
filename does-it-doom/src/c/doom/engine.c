@@ -95,9 +95,15 @@ static inline float lut_cos(float a) { return s_cos_lut[angle_to_lut_idx(a)]; }
 
 // === Hardcoded v0 tilemap (E1M1 starting room quote) =====================
 //
-// 32x32 grid. Each byte is a tex_id_t; 0 = empty space, others are wall
-// texture IDs. The map is a 10x10 room with a single doorway south that
-// opens into a small corridor. Quotes E1M1's "hangar" feel.
+// 32x32 grid. Each byte is a tile id; 0 = empty space, 1..TEX_COUNT-1 are
+// wall texture IDs (vertical-wall, blocks vision + movement). TILE_POOL is
+// a special sentinel: blocks movement but is invisible to the raycaster —
+// the floor pass paints it as NUKAGE liquid so it reads as an uncrossable
+// pool that you can see and shoot over. Layout, walking south from spawn:
+// Room A (start, with NUKAGE alcove west) → corridor with STEP1 pillars →
+// Room B (mid, compressed) → Room C (far, with central pool + imp behind).
+
+#define TILE_POOL 16   // > TEX_COUNT, distinct sentinel — uncrossable liquid floor
 
 static const uint8_t s_tilemap[TILEMAP_H][TILEMAP_W] = {
 /*y= 0*/ {0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0},
@@ -125,13 +131,13 @@ static const uint8_t s_tilemap[TILEMAP_H][TILEMAP_W] = {
 /*y=22 Room B north wall    */ {0,0,0,0,0,0,0,0,0,0,0,0,1,1,1,1,1,1,0,0,1,1,1,1,1,0,0,0,0,0,0,0},
 /*y=23 Room B interior      */ {0,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0},
 /*y=24                      */ {0,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0},
-/*y=25  NUKAGE pit          */ {0,0,0,0,0,0,0,0,0,0,0,0,1,0,0,2,2,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0},
-/*y=26  NUKAGE pit          */ {0,0,0,0,0,0,0,0,0,0,0,0,1,0,0,2,2,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0},
-/*y=27                      */ {0,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0},
-/*y=28                      */ {0,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0},
-/*y=29 Room B south wall    */ {0,0,0,0,0,0,0,0,0,0,0,0,1,1,1,1,1,1,1,1,1,1,1,1,1,0,0,0,0,0,0,0},
-/*y=30                      */ {0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0},
-/*y=31                      */ {0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0},
+/*y=25                      */ {0,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0},
+/*y=26 B south + C north    */ {0,0,0,0,0,0,0,0,0,0,0,0,1,1,1,1,1,1,0,0,1,1,1,1,1,0,0,0,0,0,0,0},
+/*y=27 Room C interior      */ {0,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0},
+/*y=28 Room C + pool top    */ {0,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,16,16,16,0,0,0,0,0,1,0,0,0,0,0,0,0},
+/*y=29 Room C + pool btm    */ {0,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,16,16,16,0,0,0,0,0,1,0,0,0,0,0,0,0},
+/*y=30 Room C interior      */ {0,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0},
+/*y=31 Room C south wall    */ {0,0,0,0,0,0,0,0,0,0,0,0,1,1,1,1,1,1,1,1,1,1,1,1,1,0,0,0,0,0,0,0},
 };
 
 // === Textures (loaded from Pebble resources at init) =====================
@@ -238,14 +244,20 @@ static void entities_init(void) {
   // Imp 2: in the corridor between the STEP1 pillars. Visible from spawn
   // through the doorway — distance-scaled small, gets bigger as you walk.
   s_entities[1] = (entity_t){ .x = 18.5f, .y = 20.0f, .kind = SPR_IMP, .alive = true };
-  // Imp 3: east side of room B, past the corridor exit.
-  s_entities[2] = (entity_t){ .x = 20.5f, .y = 26.0f, .kind = SPR_IMP, .alive = true };
-  // Imp 4: west side of room B, behind the NUKAGE pit.
-  s_entities[3] = (entity_t){ .x = 14.0f, .y = 27.5f, .kind = SPR_IMP, .alive = true };
+  // Imp 3: east side of Room B (compressed: interior is y=23..25).
+  s_entities[2] = (entity_t){ .x = 20.5f, .y = 24.5f, .kind = SPR_IMP, .alive = true };
+  // Imp 4: west side of Room B, mirror of Imp 3.
+  s_entities[3] = (entity_t){ .x = 14.0f, .y = 24.5f, .kind = SPR_IMP, .alive = true };
   // Imp 5: ambush in the NUKAGE alcove west of Room A. You only meet this
-  // one if you wander west through the new doorway — the rest of the
+  // one if you wander west through the alcove doorway — the rest of the
   // level can be cleared while ignoring it.
   s_entities[4] = (entity_t){ .x =  5.5f, .y = 11.5f, .kind = SPR_IMP, .alive = true };
+  // Imp 6: south end of Room C, on the far side of the NUKAGE pool. The
+  // pool blocks its chase path so it parks at the pool's north edge —
+  // visible the moment the player crosses into Room C from the north door,
+  // and shootable straight across the pool because pool tiles are
+  // vision-transparent.
+  s_entities[5] = (entity_t){ .x = 18.5f, .y = 30.5f, .kind = SPR_IMP, .alive = true };
 }
 
 // Column z-buffer: perpendicular wall distance per column. Walls write
@@ -349,9 +361,20 @@ static void player_init(void) {
 
 bool engine_player_dead(void) { return s_player.health == 0; }
 
-static inline bool is_wall(int mx, int my) {
+// Collision predicate — true if a moving entity (player or imp) cannot stand
+// in this tile. Walls AND pools both block, since the pool is "uncrossable
+// liquid". Out-of-map reads as solid so entities can't escape the bounds.
+static inline bool blocks_move(int mx, int my) {
   if (mx < 0 || my < 0 || mx >= TILEMAP_W || my >= TILEMAP_H) return true;
   return s_tilemap[my][mx] != 0;
+}
+
+// True only for liquid-pool tiles. The raycaster skips these (vision passes
+// through) and the floor pass paints them with the NUKAGE flat. Hitscan
+// already ignores walls entirely, so shooting over a pool just works.
+static inline bool is_pool_tile(int mx, int my) {
+  if (mx < 0 || my < 0 || mx >= TILEMAP_W || my >= TILEMAP_H) return false;
+  return s_tilemap[my][mx] == TILE_POOL;
 }
 
 static inline uint8_t tile_at(int mx, int my) {
@@ -361,11 +384,11 @@ static inline uint8_t tile_at(int mx, int my) {
 
 static void player_move(float dx, float dy) {
   // Simple AABB-vs-grid collision: step each axis independently, reject if
-  // destination tile is a wall. Player radius treated as 0 for v0.
+  // destination tile blocks movement (wall or pool). Player radius=0 for v0.
   float nx = s_player.x + dx;
-  if (!is_wall((int)nx, (int)s_player.y)) s_player.x = nx;
+  if (!blocks_move((int)nx, (int)s_player.y)) s_player.x = nx;
   float ny = s_player.y + dy;
-  if (!is_wall((int)s_player.x, (int)ny)) s_player.y = ny;
+  if (!blocks_move((int)s_player.x, (int)ny)) s_player.y = ny;
 }
 
 // === Public API ==========================================================
@@ -373,10 +396,20 @@ static void player_move(float dx, float dy) {
 static engine_debug_t s_debug;
 
 void engine_init(void) {
-  init_trig_lut();   // MUST be first — everything else may call lut_sin/cos
-  memset(s_textures, 0, sizeof(s_textures));
-  load_textures();
-  load_sprites();
+  // Static assets (trig LUT, wall + flat textures, sprites) are immutable
+  // and survive across restarts — load them at most once per app session.
+  // Re-running these mallocs on every death→restart leaks ~44 KB each time
+  // (engine_init was called from enter_play() after STAGE_DEAD); two cycles
+  // exhausted the 128 KB sandbox heap and the third-onward restart loaded
+  // with zero textures/sprites (solid-color floor, invisible imp, no HUD).
+  static bool s_assets_loaded = false;
+  if (!s_assets_loaded) {
+    init_trig_lut();   // MUST be first — everything else may call lut_sin/cos
+    memset(s_textures, 0, sizeof(s_textures));
+    load_textures();
+    load_sprites();
+    s_assets_loaded = true;
+  }
   entities_init();
   player_init();
   memset(&s_debug, 0, sizeof(s_debug));
@@ -501,8 +534,8 @@ void engine_tick(const engine_input_t *in) {
         float k = IMP_MOVE_SPEED / total;
         float nx = e->x - dx * k;
         float ny = e->y - dy * k;
-        if (!is_wall((int)nx, (int)e->y)) e->x = nx;
-        if (!is_wall((int)e->x, (int)ny)) e->y = ny;
+        if (!blocks_move((int)nx, (int)e->y)) e->x = nx;
+        if (!blocks_move((int)e->x, (int)ny)) e->y = ny;
       }
     }
   }
@@ -582,6 +615,10 @@ void engine_render(uint8_t *out) {
   {
     texture_t *floor_tex = &s_textures[TEX_FLOOR];
     texture_t *ceil_tex  = &s_textures[TEX_CEIL];
+    // Pool overlay: if a floor pixel lands inside a TILE_POOL cell, sample
+    // NUKAGE instead of the normal floor flat. NUKAGE is 64x64 so the same
+    // u,v masks (already power-of-two for FLOOR) reuse cleanly.
+    texture_t *pool_tex = &s_textures[TEX_NUKAGE1];
     if (floor_tex->pixels && ceil_tex->pixels) {
       // Ray dir at leftmost (camera_x=-1) and rightmost (camera_x=+1) cols.
       // forward = (cos pa, sin pa); right = (-sin pa, cos pa).
@@ -628,7 +665,15 @@ void engine_render(uint8_t *out) {
         for (int x = 0; x < VIEWPORT_W; x++) {
           uint32_t u = ((uint32_t)tx_fx >> 16) & fw_mask;
           uint32_t v = ((uint32_t)ty_fx >> 16) & fh_mask;
-          floor_row[x] = floor_tex->pixels[v * floor_tex->w + u];
+          // World-tile coord = (world * fw) / fw. Since fw=64 and tx_fx is
+          // (world*fw)<<16, world-tile = tx_fx >> 22 (signed arithmetic
+          // shift handles negative world coords past the map edge).
+          int tile_x = tx_fx >> 22;
+          int tile_y = ty_fx >> 22;
+          if (pool_tex->pixels && is_pool_tile(tile_x, tile_y))
+            floor_row[x] = pool_tex->pixels[v * pool_tex->w + u];
+          else
+            floor_row[x] = floor_tex->pixels[v * floor_tex->w + u];
           // Ceiling uses the same UV (symmetric horizon), different texture.
           uint32_t cu = u & cw_mask;
           uint32_t cv = v & chh_mask;
@@ -696,7 +741,9 @@ void engine_render(uint8_t *out) {
         side = 1;
       }
       uint8_t t = tile_at(map_x, map_y);
-      if (t != 0) { hit_tex = t; break; }
+      // Pool tiles are floor-level liquid: walk-blocking but vision-clear,
+      // so the ray must continue past them and hit a real wall behind.
+      if (t != 0 && t != TILE_POOL) { hit_tex = t; break; }
     }
     if (hit_tex == 0) continue;   // no wall in range — keep floor/ceiling
 
