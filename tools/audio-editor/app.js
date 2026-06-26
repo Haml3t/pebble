@@ -78,6 +78,38 @@ function escapeHtml(s) {
   })[c]);
 }
 
+// Slugify a recording's display name into a filename-safe token, so exports
+// carry the human name the user gave it via the rename prompt. Returns "" when
+// the recording hasn't been renamed.
+function displayNameSlug(displayName) {
+  if (!displayName) return "";
+  return String(displayName)
+      .trim()
+      .replace(/[\\/]/g, "_")       // path separators
+      .replace(/[\x00-\x1f]/g, "")  // control chars
+      .replace(/\s+/g, "_")         // whitespace → underscore
+      .replace(/_+/g, "_")          // collapse underscore runs
+      .replace(/^_+|_+$/g, "");     // trim leading/trailing underscores
+}
+
+// Insert the renamed display name right after the parent recording's stem —
+// before any "_clip_..." suffix and before the extension. Keeping the leading
+// stem intact matters: the server associates clips with their parent purely by
+// filename prefix (glob(stem + "*.wav")), so the name must still start with the
+// stem. Returns `name` unchanged when the recording hasn't been renamed.
+function nameWithDisplay(name, displayName) {
+  const slug = displayNameSlug(displayName);
+  if (!slug) return name;
+  const dot  = name.lastIndexOf(".");
+  const ext  = dot >= 0 ? name.slice(dot) : "";
+  const base = dot >= 0 ? name.slice(0, dot) : name;
+  const clipIdx = base.indexOf("_clip_");
+  if (clipIdx >= 0) {
+    return base.slice(0, clipIdx) + "_" + slug + base.slice(clipIdx) + ext;
+  }
+  return base + "_" + slug + ext;
+}
+
 function ensureAudioCtx() {
   if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
   return audioCtx;
@@ -207,7 +239,7 @@ function renderClipLi(clip, parent) {
   });
   cli.querySelector(".export-clip").addEventListener("click", (e) => {
     e.stopPropagation();
-    triggerExport(clip.name);
+    triggerExport(clip.name, clip.display_name);
   });
   cli.querySelector(".row").addEventListener("click", () => {
     document.querySelectorAll("#files li.active, #files li.clip.active").forEach(x => x.classList.remove("active"));
@@ -244,7 +276,7 @@ async function toggleStar(name, value, el) {
   }
 }
 
-function triggerExport(name) {
+function triggerExport(name, displayName) {
   // In Android WebView the EditorActivity injects window.GlanceBridge —
   // use its shareFile() to surface Android's share sheet (Gmail / Drive /
   // Messages / Save to Files etc). On a regular browser the bridge is
@@ -258,14 +290,18 @@ function triggerExport(name) {
     }
     return;
   }
+  // If the recording was renamed, fold its display name into the saved
+  // download filename (after the stem). This only affects what the browser
+  // names the file — the on-disk recording is untouched.
+  const downloadName = nameWithDisplay(name, displayName);
   const url = "/recordings/" + encodeURIComponent(name);
   const link = document.createElement("a");
   link.href = url;
-  link.download = name;
+  link.download = downloadName;
   document.body.appendChild(link);
   link.click();
   document.body.removeChild(link);
-  setStatus("download → " + name);
+  setStatus("download → " + downloadName);
 }
 
 // ---- Load + decode ------------------------------------------------------
@@ -859,7 +895,11 @@ async function saveSelection() {
   // "_clip_" so the new save still slots under the original recording.
   const clipIdx = parentStem.indexOf("_clip_");
   if (clipIdx > 0) parentStem = parentStem.slice(0, clipIdx);
-  const defaultName = `${parentStem}_clip_${a.toFixed(1)}-${b.toFixed(1)}s.wav`;
+  // Fold the renamed display name in after the parent stem (before "_clip_")
+  // so the saved clip still globs under its parent recording.
+  const defaultName = nameWithDisplay(
+      `${parentStem}_clip_${a.toFixed(1)}-${b.toFixed(1)}s.wav`,
+      currentFile.display_name);
   const userName = prompt(
       `Save selection (${a.toFixed(1)}s – ${b.toFixed(1)}s, length ${(b - a).toFixed(1)}s) as:`,
       defaultName);
@@ -908,7 +948,7 @@ saveBtn.addEventListener("click", saveSelection);
 shareBtn.addEventListener("click", sharePackage);
 deleteBtn.addEventListener("click", deleteRecording);
 exportBtn.addEventListener("click", () => {
-  if (currentFile) triggerExport(currentFile.name);
+  if (currentFile) triggerExport(currentFile.name, currentFile.display_name);
 });
 addMarkerBtn.addEventListener("click", addMarkerAtPlayhead);
 renameBtn.addEventListener("click", renameRecording);
