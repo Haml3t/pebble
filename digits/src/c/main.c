@@ -193,8 +193,9 @@ static void menu_select(MenuLayer *menu, MenuIndex *idx, void *context) {
 static void menu_select_long(MenuLayer *menu, MenuIndex *idx, void *context) {
   if (idx->row < s_count) {
     s_pending_delete = idx->row;
+    // s_confirm_num_layer doesn't exist until the window's load handler runs
+    // (during the push below), so the text is applied there from this buffer.
     format_full(s_numbers[idx->row], s_confirm_num_text, sizeof(s_confirm_num_text));
-    text_layer_set_text(s_confirm_num_layer, s_confirm_num_text);
     window_stack_push(s_confirm_window, true);
   }
 }
@@ -502,6 +503,7 @@ static void confirm_window_load(Window *window) {
   text_layer_set_text_color(s_confirm_num_layer, GColorVividCerulean);
   text_layer_set_text_alignment(s_confirm_num_layer, GTextAlignmentCenter);
   text_layer_set_font(s_confirm_num_layer, fonts_get_system_font(FONT_KEY_GOTHIC_24_BOLD));
+  text_layer_set_text(s_confirm_num_layer, s_confirm_num_text);  // populated by menu_select_long before push
   layer_add_child(root, text_layer_get_layer(s_confirm_num_layer));
 
   s_confirm_hint_layer = text_layer_create(GRect(6, 170, b.size.w - 12, 50));
