@@ -1,0 +1,34 @@
+#!/usr/bin/env bash
+# Like scripts/pebble-emu-chain, but scoped to digits/ instead of the repo
+# root. Runs multiple pebble subcommands inside ONE container so they share a
+# QEMU instance — subsequent commands cost ~2-5s instead of paying the
+# ~25-30s cold-boot tax each time.
+#
+# Usage:
+#   ./scripts/pebble-digits-emu-chain "pebble build && pebble install build/digits.pbw && pebble screenshot build/emu-shot.png && pebble kill"
+set -euo pipefail
+
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+PROJECT_DIR="${REPO_ROOT}/digits"
+IMAGE="${PEBBLE_SDK_IMAGE:-rebble/pebble-sdk:latest}"
+
+if [ $# -lt 1 ]; then
+  echo "usage: $0 \"<bash command string>\"" >&2
+  exit 2
+fi
+
+if [ -t 0 ] && [ -t 1 ]; then
+  TTY_FLAGS=(-it)
+else
+  TTY_FLAGS=(-i)
+fi
+
+exec docker run --rm "${TTY_FLAGS[@]}" \
+  -e SDL_VIDEODRIVER=dummy \
+  -e PEBBLE_EMULATOR=emery \
+  -v "${PROJECT_DIR}:/home/pebble/project" \
+  -w /home/pebble/project \
+  --network host \
+  --entrypoint bash \
+  "${IMAGE}" \
+  -c "$1"

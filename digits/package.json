@@ -1,0 +1,28 @@
+{
+  "name": "pebble-digits",
+  "author": "David Sugarman",
+  "version": "0.1.0",
+  "description": "Jot down a phone number on the watch when no phone is handy. On-watch digit entry, a saved list, and review/edit. US numbers first.",
+  "keywords": [
+    "pebble-app"
+  ],
+  "private": true,
+  "dependencies": {},
+  "pebble": {
+    "displayName": "Digits",
+    "uuid": "4f511278-938d-4ef1-9584-f0c4e8cdc50d",
+    "sdkVersion": "3",
+    "enableMultiJS": true,
+    "targetPlatforms": [
+      "emery"
+    ],
+    "watchapp": {
+      "watchface": false
+    },
+    "capabilities": [],
+    "messageKeys": [],
+    "resources": {
+      "media": []
+    }
+  }
+}
