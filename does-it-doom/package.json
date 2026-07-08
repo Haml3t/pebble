@@ -12,7 +12,6 @@
     "displayName": "Does It Doom?",
     "uuid": "1e34a44b-b5d1-4ad8-ac7d-103609223e24",
     "sdkVersion": "3",
-    "enableMultiJS": true,
     "targetPlatforms": [
       "emery"
     ],
