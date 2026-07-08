@@ -12,7 +12,6 @@
     "displayName": "Digits",
     "uuid": "4f511278-938d-4ef1-9584-f0c4e8cdc50d",
     "sdkVersion": "3",
-    "enableMultiJS": true,
     "targetPlatforms": [
       "emery"
     ],
